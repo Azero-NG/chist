@@ -3,6 +3,7 @@ use crate::parse::{parse_file, ParsedBlock, ParsedSession};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use walkdir::WalkDir;
@@ -42,29 +43,89 @@ pub struct ScanReport {
     pub deleted: usize,
     pub failed: usize,
     pub elapsed_ms: u128,
+    pub skipped_cooldown: bool,
+    pub cooldown_age_secs: i64,
 }
 
-/// Cooldown window: if the last full scan finished within this many seconds,
-/// `sync_scan` is a no-op. Keeps back-to-back AI tool calls cheap.
-const SCAN_COOLDOWN_SECS: i64 = 30;
+impl ScanReport {
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "action": "sync",
+            "skipped_cooldown": self.skipped_cooldown,
+            "cooldown_age_secs": self.cooldown_age_secs,
+            "total_on_disk": self.total_on_disk,
+            "indexed_before": self.indexed_before,
+            "reindexed": self.reindexed,
+            "deleted": self.deleted,
+            "failed": self.failed,
+            "elapsed_ms": self.elapsed_ms,
+        })
+    }
+}
 
-/// Synchronous incremental scan: stat all jsonl files, reindex changed ones,
-/// drop sessions whose files disappeared. Designed to run before every search.
-pub fn sync_scan(conn: &Connection) -> Result<ScanReport> {
+/// Cooldown window: if the last sync finished within this many seconds, the
+/// next invocation is a no-op. Tames Stop/SubagentStop hooks that fire on
+/// every turn — back-to-back messages don't each schedule a walkdir.
+pub const SYNC_COOLDOWN_SECS: i64 = 30;
+
+/// CLI entrypoint for `chist sync`. Writes a one-line audit log to
+/// `~/.cache/chist/sync.log` so background invocations from Stop hooks can
+/// be debugged after the fact (stderr is discarded by the hook).
+pub fn run_sync(opts: crate::cli::SyncOpts) -> Result<()> {
+    let conn = db::open()?;
+    let report = match incremental_sync(&conn, opts.force) {
+        Ok(r) => r,
+        Err(e) => {
+            // Log the error before bubbling — so the hook leaves a trace.
+            let _ = append_sync_log(&format!("error: {e:#}"));
+            return Err(e);
+        }
+    };
+
+    let line = if report.skipped_cooldown {
+        format!(
+            "skipped (cooldown, last_sync was {}s ago)",
+            report.cooldown_age_secs
+        )
+    } else {
+        format!(
+            "done: {}r/{}d/{}f in {}ms ({} on disk, {} indexed)",
+            report.reindexed,
+            report.deleted,
+            report.failed,
+            report.elapsed_ms,
+            report.total_on_disk,
+            report.indexed_before
+        )
+    };
+    let _ = append_sync_log(&line);
+
+    println!("{}", serde_json::to_string_pretty(&report.to_json())?);
+    Ok(())
+}
+
+/// Walk all jsonl files, reindex changed ones, drop deleted ones. Internal
+/// API kept on `&Connection` so tests can drive it without spawning the CLI.
+pub fn incremental_sync(conn: &Connection, force: bool) -> Result<ScanReport> {
     let started = Instant::now();
     let mut report = ScanReport::default();
 
-    // Cooldown gate.
-    if let Some(prev) = db::get_meta(conn, "last_full_scan_at")?.and_then(|v| v.parse::<i64>().ok())
-    {
-        let now = chrono::Utc::now().timestamp();
-        if now - prev < SCAN_COOLDOWN_SECS {
-            // Still report indexed_before so callers can see the cached state.
-            report.indexed_before = conn
-                .query_row("SELECT count(*) FROM sessions", [], |r| r.get::<_, i64>(0))
-                .unwrap_or(0) as usize;
-            report.elapsed_ms = started.elapsed().as_millis();
-            return Ok(report);
+    // Cooldown gate (skipped under --force).
+    if !force {
+        if let Some(prev) =
+            db::get_meta(conn, "last_full_scan_at")?.and_then(|v| v.parse::<i64>().ok())
+        {
+            let now = chrono::Utc::now().timestamp();
+            let age = now - prev;
+            if age < SYNC_COOLDOWN_SECS {
+                report.indexed_before = conn
+                    .query_row("SELECT count(*) FROM sessions", [], |r| r.get::<_, i64>(0))
+                    .unwrap_or(0) as usize;
+                report.elapsed_ms = started.elapsed().as_millis();
+                report.skipped_cooldown = true;
+                report.cooldown_age_secs = age;
+                return Ok(report);
+            }
         }
     }
 
@@ -153,6 +214,23 @@ pub fn sync_scan(conn: &Connection) -> Result<ScanReport> {
 
     report.elapsed_ms = started.elapsed().as_millis();
     Ok(report)
+}
+
+/// Append a single timestamped line to `~/.cache/chist/sync.log`. Errors are
+/// swallowed by the caller because Stop-hook runs already discard stderr —
+/// failing to log shouldn't take down a sync that otherwise succeeded.
+fn append_sync_log(message: &str) -> Result<()> {
+    let dir = db::cache_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("sync.log");
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&path)?;
+    let ts = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%:z");
+    let pid = std::process::id();
+    writeln!(f, "{ts}  pid={pid}  {message}")?;
+    Ok(())
 }
 
 /// Reindex a single jsonl file atomically.

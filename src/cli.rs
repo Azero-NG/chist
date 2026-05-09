@@ -13,8 +13,22 @@ pub enum Command {
     Search(SearchOpts),
     /// Wipe and rebuild the index from scratch
     Rebuild(RebuildOpts),
+    /// Incrementally update the index (walkdir + mtime/size diff).
+    /// Designed to be invoked from a Stop / SubagentStop hook.
+    Sync(SyncOpts),
+    /// Install Stop/SubagentStop hooks into ~/.claude/settings.json
+    InstallHook,
+    /// Remove the chist Stop/SubagentStop hooks from ~/.claude/settings.json
+    UninstallHook,
     /// Print index status (session count, last scan, db size)
     Stats,
+}
+
+#[derive(Parser, Debug, Clone)]
+pub struct SyncOpts {
+    /// Bypass the cooldown gate; run even if a sync ran very recently.
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Parser, Debug, Clone)]

@@ -15,13 +15,19 @@ cargo build --release
 ## 用法
 
 ```sh
-# 首次：建索引（约 2 分钟，2900+ session × ~9GB jsonl）
+# 首次：建索引（约 13 秒，2900+ session × ~9GB jsonl）
 chist rebuild
+
+# 注册 Stop / SubagentStop hook，让 Claude Code 每个 turn 结束自动增量更新
+chist install-hook
 
 # 查询
 chist search "rust async retry"
 chist search "claude-mem" --limit 5 --format text
 chist search "向量数据库" --cwd /Users/me/mine/llm --since 30d
+
+# 手动触发一次增量同步（hook 兜底；通常不需要直接调）
+chist sync
 
 # 查索引状态
 chist stats
@@ -40,7 +46,7 @@ chist search <query> [options]
   --until <date>
   --limit <n>          默认 20
   --format json|text   默认 json
-  --no-scan            跳过增量 mtime 扫，仅查现有索引
+  --no-scan            （历史选项；已 no-op，增量同步改由 hook 驱动）
   --no-config          忽略 ~/.config/chist/config.toml 的过滤规则
 ```
 
@@ -110,6 +116,52 @@ min_user_message_count = 0
 
 **生效状态**：JSON 输出中的 `filters.config_applied` 字段标记本次查询是否实际应用了配置（文件存在且未 `--no-config`）。结果偏少时可以据此判断是配置静默裁剪还是真没匹配。
 
+## 增量更新（Stop hook）
+
+`chist search` 不再做查询时同步 — 索引由 Claude Code 的 Stop / SubagentStop hook 触发后台 `chist sync` 来跟进。
+
+### 安装
+
+```sh
+chist install-hook       # 写入 ~/.claude/settings.json
+chist uninstall-hook     # 反向操作；只移除 chist 自己写入的条目
+```
+
+`install-hook` 在 `~/.claude/settings.json` 的 `hooks.Stop` 与 `hooks.SubagentStop` 数组里各 append 一项：
+
+```json
+{
+  "hooks": [
+    { "type": "command",
+      "command": "bash -c 'chist sync >/dev/null 2>&1 </dev/null &'" }
+  ]
+}
+```
+
+幂等：重复运行不会产生重复条目。已有的 `Stop` / `SubagentStop` 配置会被保留（与 chist 自己的并列）。写入前先备份 `settings.json.bak`。
+
+### 行为
+
+- hook 命令立即返回 0（`bash -c '... &'`），CC 不会因此卡 turn
+- 后台进程跑 `chist sync`：walkdir + mtime/size 比对 + reindex 变更的 + 清失踪的，过程几百 ms
+- **30 秒 cooldown**：连发消息只在首条触发；之后命中 cooldown 直接退出（"晚一点就晚一点"）
+- 多个 sync 并行竞争：靠 SQLite WAL 写锁串行 + cooldown 入口去重；不引入文件锁
+- subagent jsonl 跟主 jsonl 用同一套 sync 路径
+
+### 调试
+
+后台进程的 stderr 被 hook 写法丢弃，但每次 sync 会写一行到 `~/.cache/chist/sync.log`：
+
+```
+2026-05-09T09:50:11+08:00  pid=12345  done: 3r/0d/0f in 142ms (2965 on disk, 2962 indexed)
+2026-05-09T09:50:14+08:00  pid=12389  skipped (cooldown, last_sync was 3s ago)
+2026-05-09T09:51:02+08:00  pid=12450  error: ...
+```
+
+格式：`<本地时间> pid=<PID> <状态>`。状态为 `done: <reindexed>r/<deleted>d/<failed>f in <ms>ms (...)`、`skipped (cooldown, ...)` 或 `error: ...`。
+
+要手动跑一次（绕过 cooldown 与 hook）：`chist sync --force`。
+
 ## 作为 Claude Code skill
 
 ```sh
@@ -121,7 +173,7 @@ cp skill/SKILL.md ~/.claude/skills/claude-history/
 
 ## 行为
 
-- 增量扫描：`chist search` 默认在查询前 stat 全部 jsonl，找出 mtime 变化的重索引；30 秒内重复调用自动跳过（cooldown）
+- 增量更新：见上方"增量更新（Stop hook）"。`chist search` 本身只查 DB
 - subagent session：路径含 `subagents/` 的 jsonl 单独建条目，不被父 session 覆盖
 - 索引内容：`text` / `thinking` / `tool_use` 名称+参数 / `tool_result` 输出，每块上限 100KB
 - Tokenizer：`trigram`，中英混合直接搜；2 字 CJK 命中率较低（trigram 限制）

@@ -19,9 +19,33 @@ pub const FTS5_CREATE_SQL: &str = "
     );
 ";
 
-pub fn db_path() -> Result<PathBuf> {
+/// Root directory for chist's on-disk state (index.db, sync.log, ...).
+///
+/// Resolution order:
+///   1. `$CHIST_CACHE_DIR` — explicit override, used by tests and by power
+///      users who want to relocate the index.
+///   2. `$XDG_CACHE_HOME/chist` — picked up on Linux *and* macOS, since
+///      `dirs::cache_dir()` ignores XDG on macOS and that breaks tests that
+///      stage a fake $HOME under tempdir.
+///   3. `dirs::cache_dir()/chist` — `~/.cache/chist` on Linux,
+///      `~/Library/Caches/chist` on macOS.
+pub fn cache_dir() -> Result<PathBuf> {
+    if let Ok(p) = std::env::var("CHIST_CACHE_DIR") {
+        if !p.is_empty() {
+            return Ok(PathBuf::from(p));
+        }
+    }
+    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
+        if !xdg.is_empty() {
+            return Ok(PathBuf::from(xdg).join("chist"));
+        }
+    }
     let cache = dirs::cache_dir().context("could not resolve cache directory")?;
-    Ok(cache.join("chist").join("index.db"))
+    Ok(cache.join("chist"))
+}
+
+pub fn db_path() -> Result<PathBuf> {
+    Ok(cache_dir()?.join("index.db"))
 }
 
 pub fn open() -> Result<Connection> {

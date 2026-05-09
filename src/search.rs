@@ -1,7 +1,6 @@
 use crate::cli::{Format, SearchOpts};
 use crate::config::{self, Config};
 use crate::db;
-use crate::index;
 use crate::output::{Filters, ResultItem, SearchOutput, Stats};
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
@@ -10,11 +9,10 @@ use std::time::Instant;
 
 pub fn run(opts: SearchOpts) -> Result<()> {
     let conn = db::open()?;
-    let scan = if opts.no_scan {
-        index::ScanReport::default()
-    } else {
-        index::sync_scan(&conn)?
-    };
+    // Search no longer triggers a synchronous scan — incremental updates are
+    // driven by the Stop/SubagentStop hook running `chist sync` in the
+    // background. `--no-scan` is now a no-op kept for backward compatibility.
+    let _ = opts.no_scan;
 
     // Load ~/.config/chist/config.toml unless the user explicitly bypassed it.
     // Missing file → empty rules; malformed file is surfaced as an error so
@@ -179,8 +177,11 @@ pub fn run(opts: SearchOpts) -> Result<()> {
         stats: Stats {
             total_matches,
             indexed_sessions: total_indexed,
-            scan_duration_ms: scan.elapsed_ms,
-            reindex_count: scan.reindexed,
+            // scan_duration_ms / reindex_count remain in the JSON schema for
+            // backward compatibility but are always 0 now that search no
+            // longer drives incremental scans.
+            scan_duration_ms: 0,
+            reindex_count: 0,
             query_duration_ms: query_duration.as_millis(),
         },
     };

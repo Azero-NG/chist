@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod db;
+mod hooks;
 mod index;
 mod output;
 mod parse;
@@ -14,6 +15,9 @@ fn main() -> Result<()> {
     match args.command {
         cli::Command::Search(opts) => search::run(opts),
         cli::Command::Rebuild(opts) => index::rebuild(opts),
+        cli::Command::Sync(opts) => index::run_sync(opts),
+        cli::Command::InstallHook => hooks::install(),
+        cli::Command::UninstallHook => hooks::uninstall(),
         cli::Command::Stats => db::print_stats(),
     }
 }
