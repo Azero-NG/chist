@@ -72,29 +72,42 @@ pub fn sync_scan(conn: &Connection) -> Result<ScanReport> {
     let on_disk = discover_jsonl_files(&root);
     report.total_on_disk = on_disk.len();
 
-    // Build map of indexed paths → mtime.
-    let mut indexed: HashMap<PathBuf, i64> = HashMap::new();
+    // Build map of indexed paths → (mtime, size). Both fields are checked so
+    // that mtime collisions (sub-second writes, restored timestamps) still get
+    // caught when the size differs.
+    let mut indexed: HashMap<PathBuf, (i64, i64)> = HashMap::new();
     {
-        let mut stmt = conn.prepare("SELECT file_path, file_mtime FROM sessions")?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        let mut stmt =
+            conn.prepare("SELECT file_path, file_mtime, file_size FROM sessions")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?;
         for row in rows {
-            let (p, m) = row?;
-            indexed.insert(PathBuf::from(p), m);
+            let (p, m, s) = row?;
+            indexed.insert(PathBuf::from(p), (m, s));
         }
     }
     report.indexed_before = indexed.len();
 
     // Reindex new or modified files.
     for path in &on_disk {
-        let mtime_disk = std::fs::metadata(path)
-            .ok()
+        let meta = std::fs::metadata(path).ok();
+        let mtime_disk = meta
+            .as_ref()
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
+        let size_disk = meta.as_ref().map(|m| m.len() as i64).unwrap_or(0);
         let needs = match indexed.get(path) {
             None => true,
-            Some(known) => *known != mtime_disk,
+            Some(&(known_mtime, known_size)) => {
+                known_mtime != mtime_disk || known_size != size_disk
+            }
         };
         if needs {
             match reindex_file(conn, path) {
