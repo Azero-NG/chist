@@ -75,6 +75,11 @@ pub struct SearchOpts {
     /// Ignore ~/.config/chist/config.toml exclude/filter rules for this run.
     #[arg(long)]
     pub no_config: bool,
+
+    /// Override `[search] snippet_tokens` for this query. Number of tokens
+    /// of context shown around each match (FTS5 clamps to 1..=64).
+    #[arg(long)]
+    pub snippet_tokens: Option<i64>,
 }
 
 #[derive(clap::ValueEnum, Debug, Clone, Copy)]

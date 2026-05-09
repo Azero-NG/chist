@@ -48,6 +48,7 @@ chist search <query> [options]
   --format json|text   默认 json
   --no-scan            （历史选项；已 no-op，增量同步改由 hook 驱动）
   --no-config          忽略 ~/.config/chist/config.toml 的过滤规则
+  --snippet-tokens <N> 命中周边的 token 数，覆盖配置（FTS5 限制 1-64）
 ```
 
 ## 配置过滤
@@ -65,6 +66,11 @@ $XDG_CONFIG_HOME/chist/config.toml
 完整字段（全部可选，缺省取默认值）：
 
 ```toml
+[search]
+# 命中周边显示多少 token 的上下文。FTS5 限制 1-64，超出会自动 clamp。
+# 默认 16。CLI 的 --snippet-tokens 会覆盖此值。
+snippet_tokens = 16
+
 [exclude]
 # 排除这些 cwd 下的所有 session（前缀按目录边界匹配：
 # "/Users/me/scratch" 排除 /Users/me/scratch 与 /Users/me/scratch/foo,

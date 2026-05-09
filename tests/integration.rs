@@ -146,6 +146,49 @@ fn cwd_filter_restricts_results() {
 }
 
 #[test]
+fn snippet_tokens_flag_widens_context() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let cache = tmp.path().join("cache");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&cache).unwrap();
+
+    // Long enough that snippet() actually has to truncate.
+    let long = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega keyword tail1 tail2 tail3 tail4 tail5 tail6 tail7 tail8 tail9 tail10 tail11 tail12 tail13 tail14 tail15 tail16 tail17 tail18 tail19 tail20";
+    let payload = format!(
+        r#"{{"type":"user","sessionId":"77777777-7777-7777-7777-777777777777","cwd":"/Users/fake/sn","timestamp":"2026-04-15T10:00:00Z","message":{{"role":"user","content":"{long}"}}}}"#
+    );
+    let projects = home.join(".claude").join("projects");
+    write(
+        &projects.join("sn").join("77777777-7777-7777-7777-777777777777.jsonl"),
+        &[&payload],
+    );
+
+    let bin = bin();
+    Command::new(&bin).arg("rebuild")
+        .env("HOME", &home).env("XDG_CACHE_HOME", &cache)
+        .output().unwrap();
+
+    let snippet_for = |tokens: &str| -> String {
+        let out = Command::new(&bin)
+            .arg("search").arg("keyword").arg("--format").arg("json")
+            .arg("--snippet-tokens").arg(tokens)
+            .env("HOME", &home).env("XDG_CACHE_HOME", &cache)
+            .output().unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        v["results"][0]["snippet"].as_str().unwrap().to_string()
+    };
+    let narrow = snippet_for("4");
+    let wide = snippet_for("60");
+    assert!(
+        wide.len() > narrow.len(),
+        "wider snippet should have more chars: narrow={narrow:?} wide={wide:?}"
+    );
+    assert!(narrow.contains("keyword"));
+    assert!(wide.contains("keyword"));
+}
+
+#[test]
 fn jieba_default_handles_two_char_cjk_query() {
     // The whole point of switching the default tokenizer to jieba: a 2-char
     // CJK query like "前端" should now hit, where trigram would fail.

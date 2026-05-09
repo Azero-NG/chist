@@ -85,7 +85,16 @@ pub fn run(opts: SearchOpts) -> Result<()> {
     // distinct sessions in the result set after Rust-side grouping, plus
     // headroom for sessions with many hits.
     let inner_limit = (opts.limit * MAX_HITS_PER_SESSION * 5).max(500) as i64;
-    let mut sql = String::from(
+    // Snippet token count: CLI flag wins; otherwise config; otherwise default.
+    // FTS5 silently clamps to [1, 64] so we match that here for clearer errors.
+    let snippet_tokens = opts
+        .snippet_tokens
+        .unwrap_or(cfg.search.snippet_tokens)
+        .clamp(1, 64);
+    // FTS5 `snippet()` requires an integer literal for the token-count arg —
+    // it isn't a bindable parameter — so we format it directly. Safe because
+    // we just clamped it to a small i64 range.
+    let mut sql = format!(
         "SELECT
             s.session_id, s.claude_session_id, s.is_subagent, s.cwd, s.project_dir,
             s.started_at, s.last_activity, s.message_count,
@@ -96,10 +105,10 @@ pub fn run(opts: SearchOpts) -> Result<()> {
             m.block_kind AS matched_kind
         FROM (
             SELECT session_id, role, block_kind,
-                   snippet(messages_fts, 0, '<<', '>>', '…', 16) AS snip,
+                   snippet(messages_fts, 0, '<<', '>>', '…', {snippet_tokens}) AS snip,
                    rank
             FROM messages_fts
-            WHERE messages_fts MATCH ?",
+            WHERE messages_fts MATCH ?"
     );
     let mut binds: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(fts_query.clone())];
 

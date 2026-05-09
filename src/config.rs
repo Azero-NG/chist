@@ -11,8 +11,24 @@ use std::path::PathBuf;
 #[serde(default)]
 pub struct Config {
     pub tokenizer: TokenizerConfig,
+    pub search: SearchConfig,
     pub exclude: ExcludeRules,
     pub filter: FilterRules,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(default)]
+pub struct SearchConfig {
+    /// Number of tokens of context FTS5's `snippet()` builds around each
+    /// match. Larger = more context per hit (and longer JSON). FTS5 clamps
+    /// to [1, 64]; we follow suit.
+    pub snippet_tokens: i64,
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self { snippet_tokens: 16 }
+    }
 }
 
 #[derive(Deserialize, Debug, Clone)]
