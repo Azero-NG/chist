@@ -12,9 +12,20 @@ pub enum Command {
     /// Full-text search across all indexed Claude Code sessions
     Search(SearchOpts),
     /// Wipe and rebuild the index from scratch
-    Rebuild,
+    Rebuild(RebuildOpts),
     /// Print index status (session count, last scan, db size)
     Stats,
+}
+
+#[derive(Parser, Debug, Clone)]
+pub struct RebuildOpts {
+    /// Emit per-phase timing logs to stderr.
+    #[arg(short, long)]
+    pub verbose: bool,
+
+    /// Print a progress line every N parsed files (implies --verbose).
+    #[arg(long, default_value_t = 0)]
+    pub progress_every: usize,
 }
 
 #[derive(Parser, Debug, Clone)]

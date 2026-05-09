@@ -55,8 +55,7 @@ pub fn sync_scan(conn: &Connection) -> Result<ScanReport> {
     let mut report = ScanReport::default();
 
     // Cooldown gate.
-    if let Some(prev) = db::get_meta(conn, "last_full_scan_at")?
-        .and_then(|v| v.parse::<i64>().ok())
+    if let Some(prev) = db::get_meta(conn, "last_full_scan_at")?.and_then(|v| v.parse::<i64>().ok())
     {
         let now = chrono::Utc::now().timestamp();
         if now - prev < SCAN_COOLDOWN_SECS {
@@ -77,9 +76,7 @@ pub fn sync_scan(conn: &Connection) -> Result<ScanReport> {
     let mut indexed: HashMap<PathBuf, i64> = HashMap::new();
     {
         let mut stmt = conn.prepare("SELECT file_path, file_mtime FROM sessions")?;
-        let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-        })?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
         for row in rows {
             let (p, m) = row?;
             indexed.insert(PathBuf::from(p), m);
@@ -126,7 +123,10 @@ pub fn sync_scan(conn: &Connection) -> Result<ScanReport> {
             for sid in &session_ids {
                 tx.execute("DELETE FROM messages_fts WHERE session_id = ?", [sid])?;
             }
-            tx.execute("DELETE FROM sessions WHERE file_path = ?", [p.to_string_lossy()])?;
+            tx.execute(
+                "DELETE FROM sessions WHERE file_path = ?",
+                [p.to_string_lossy()],
+            )?;
             report.deleted += 1;
         }
         tx.commit()?;
@@ -217,16 +217,32 @@ fn insert_blocks(conn: &Connection, session_id: &str, blocks: &[ParsedBlock]) ->
     Ok(())
 }
 
-pub fn rebuild() -> Result<()> {
+pub fn rebuild(opts: crate::cli::RebuildOpts) -> Result<()> {
+    let verbose = opts.verbose || opts.progress_every > 0;
     let started = Instant::now();
+    macro_rules! log {
+        ($($arg:tt)*) => {
+            if verbose {
+                eprintln!("[t={:>7.3}s] {}", started.elapsed().as_secs_f64(), format_args!($($arg)*));
+            }
+        };
+    }
+    log!("rebuild starting");
+
+    let t = Instant::now();
     let conn = db::open()?;
-    // Force full rescan by clearing both tables.
+    log!("db opened, schema ready ({}ms)", t.elapsed().as_millis());
+
+    let t = Instant::now();
     conn.execute_batch("DELETE FROM messages_fts; DELETE FROM sessions;")?;
     db::set_meta(&conn, "last_full_scan_at", "0")?;
+    log!("tables cleared ({}ms)", t.elapsed().as_millis());
 
+    let t = Instant::now();
     let root = projects_root()?;
     let on_disk = discover_jsonl_files(&root);
     let total = on_disk.len();
+    log!("walkdir found {} jsonl files ({}ms)", total, t.elapsed().as_millis());
 
     // Parallel parse → bounded channel → single-thread writer.
     //
@@ -237,9 +253,11 @@ pub fn rebuild() -> Result<()> {
     use rayon::prelude::*;
     use std::sync::mpsc;
 
-    let (tx, rx) = mpsc::sync_channel::<(crate::parse::ParsedSession, Vec<crate::parse::ParsedBlock>)>(128);
+    let (tx, rx) =
+        mpsc::sync_channel::<(crate::parse::ParsedSession, Vec<crate::parse::ParsedBlock>)>(128);
     let producer_paths = on_disk;
 
+    let producer_started = Instant::now();
     let producer = std::thread::spawn(move || {
         producer_paths
             .into_par_iter()
@@ -249,19 +267,65 @@ pub fn rebuild() -> Result<()> {
                 }
             });
     });
+    log!("parse worker pool spawned");
 
     let tx_db = conn.unchecked_transaction()?;
+    log!("BEGIN transaction");
+
     let mut written: usize = 0;
-    while let Ok((s, b)) = rx.recv() {
+    let mut first_recv_at: Option<std::time::Duration> = None;
+    let mut total_recv_wait_ns: u128 = 0;
+    let mut total_insert_ns: u128 = 0;
+    let progress_every = opts.progress_every;
+    loop {
+        let recv_start = Instant::now();
+        let pair = match rx.recv() {
+            Ok(p) => p,
+            Err(_) => break,
+        };
+        total_recv_wait_ns += recv_start.elapsed().as_nanos();
+        if first_recv_at.is_none() {
+            first_recv_at = Some(started.elapsed());
+            log!(
+                "first parsed result received ({}ms after start)",
+                first_recv_at.unwrap().as_millis()
+            );
+        }
+        let (s, b) = pair;
         if s.session_id.is_empty() {
             continue;
         }
+        let ins_start = Instant::now();
         insert_session(&tx_db, &s)?;
         insert_blocks(&tx_db, &s.session_id, &b)?;
+        total_insert_ns += ins_start.elapsed().as_nanos();
         written += 1;
+        if progress_every > 0 && written % progress_every == 0 {
+            log!(
+                "progress: {}/{} written  (cum insert={:.2}s  cum recv-wait={:.2}s)",
+                written,
+                total,
+                total_insert_ns as f64 / 1e9,
+                total_recv_wait_ns as f64 / 1e9
+            );
+        }
     }
+    log!(
+        "drain done: {} written, cum insert {:.2}s, cum recv-wait {:.2}s",
+        written,
+        total_insert_ns as f64 / 1e9,
+        total_recv_wait_ns as f64 / 1e9
+    );
+
+    let t = Instant::now();
     tx_db.commit()?;
+    log!("COMMIT done ({}ms)", t.elapsed().as_millis());
+
     producer.join().expect("parse worker panicked");
+    log!(
+        "parse worker joined ({:.2}s wall in producer thread)",
+        producer_started.elapsed().as_secs_f64()
+    );
 
     db::set_meta(
         &conn,
@@ -270,6 +334,8 @@ pub fn rebuild() -> Result<()> {
     )?;
 
     let elapsed_ms = started.elapsed().as_millis();
+    log!("DONE — total {}ms", elapsed_ms);
+
     println!("{{");
     println!("  \"action\": \"rebuild\",");
     println!("  \"total_on_disk\": {},", total);

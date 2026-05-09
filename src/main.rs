@@ -12,7 +12,7 @@ fn main() -> Result<()> {
     let args = cli::Cli::parse();
     match args.command {
         cli::Command::Search(opts) => search::run(opts),
-        cli::Command::Rebuild => index::rebuild(),
+        cli::Command::Rebuild(opts) => index::rebuild(opts),
         cli::Command::Stats => db::print_stats(),
     }
 }
