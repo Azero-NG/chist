@@ -14,6 +14,10 @@ pub struct Filters {
     pub since: Option<String>,
     pub until: Option<String>,
     pub limit: usize,
+    /// True when ~/.config/chist/config.toml exists and was honored. Lets
+    /// callers tell "I got few results" apart from "config is silently
+    /// trimming things".
+    pub config_applied: bool,
 }
 
 #[derive(Serialize)]

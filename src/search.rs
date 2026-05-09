@@ -1,4 +1,5 @@
 use crate::cli::{Format, SearchOpts};
+use crate::config::{self, Config};
 use crate::db;
 use crate::index;
 use crate::output::{Filters, ResultItem, SearchOutput, Stats};
@@ -14,6 +15,16 @@ pub fn run(opts: SearchOpts) -> Result<()> {
     } else {
         index::sync_scan(&conn)?
     };
+
+    // Load ~/.config/chist/config.toml unless the user explicitly bypassed it.
+    // Missing file → empty rules; malformed file is surfaced as an error so
+    // the user notices typos.
+    let cfg = if opts.no_config {
+        Config::default()
+    } else {
+        config::load()?
+    };
+    let cfg_active = !opts.no_config && config::config_path().map(|p| p.exists()).unwrap_or(false);
 
     let since_ts = opts
         .since
@@ -59,17 +70,25 @@ pub fn run(opts: SearchOpts) -> Result<()> {
                    snippet(messages_fts, 0, '<<', '>>', '…', 16) AS snip,
                    rank
             FROM messages_fts
-            WHERE messages_fts MATCH ?1
-            ORDER BY rank
-            LIMIT ?2
-        ) m
+            WHERE messages_fts MATCH ?",
+    );
+    let mut binds: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(fts_query.clone())];
+
+    // Inner-stage exclusions: drop matched blocks of unwanted role/block_kind
+    // before they reach the rank-ordered LIMIT, so we don't waste the over-fetch
+    // budget on noise the user already declared uninteresting.
+    append_not_in(&mut sql, &mut binds, "role", &cfg.exclude.roles);
+    append_not_in(&mut sql, &mut binds, "block_kind", &cfg.exclude.block_kinds);
+
+    sql.push_str(" ORDER BY rank LIMIT ?");
+    binds.push(Box::new(inner_limit));
+
+    sql.push_str(
+        ") m
         JOIN sessions s ON s.session_id = m.session_id
         WHERE 1=1",
     );
-    let mut binds: Vec<Box<dyn rusqlite::ToSql>> = vec![
-        Box::new(fts_query.clone()),
-        Box::new(inner_limit),
-    ];
+
     if let Some(cwd) = &opts.cwd {
         sql.push_str(" AND (s.cwd = ? OR s.cwd LIKE ?)");
         binds.push(Box::new(cwd.clone()));
@@ -83,6 +102,21 @@ pub fn run(opts: SearchOpts) -> Result<()> {
         sql.push_str(" AND s.last_activity <= ?");
         binds.push(Box::new(until));
     }
+
+    // Outer-stage exclusions from config.
+    append_prefix_exclusions(&mut sql, &mut binds, "s.cwd", &cfg.exclude.cwds);
+    append_prefix_exclusions(&mut sql, &mut binds, "s.project_dir", &cfg.exclude.project_dirs);
+    append_path_prefix_exclusions(&mut sql, &mut binds, "s.file_path", &cfg.exclude.file_paths);
+    append_not_in(&mut sql, &mut binds, "s.session_id", &cfg.exclude.session_ids);
+    if cfg.filter.min_message_count > 0 {
+        sql.push_str(" AND s.message_count >= ?");
+        binds.push(Box::new(cfg.filter.min_message_count));
+    }
+    if cfg.filter.min_user_message_count > 0 {
+        sql.push_str(" AND s.user_message_count >= ?");
+        binds.push(Box::new(cfg.filter.min_user_message_count));
+    }
+
     sql.push_str(" GROUP BY s.session_id ORDER BY best_score ASC, s.last_activity DESC LIMIT ?");
     binds.push(Box::new(opts.limit as i64));
 
@@ -139,6 +173,7 @@ pub fn run(opts: SearchOpts) -> Result<()> {
             since: opts.since.clone(),
             until: opts.until.clone(),
             limit: opts.limit,
+            config_applied: cfg_active,
         },
         results,
         stats: Stats {
@@ -229,6 +264,71 @@ fn unix_to_iso(ts: i64) -> Option<String> {
     Utc.timestamp_opt(ts, 0)
         .single()
         .map(|dt: DateTime<Utc>| dt.to_rfc3339())
+}
+
+/// Append `AND <column> NOT IN (?, ?, ...)` for an exact-match exclusion list.
+/// `column` is a hardcoded SQL fragment from this crate, never user input.
+fn append_not_in(
+    sql: &mut String,
+    binds: &mut Vec<Box<dyn rusqlite::ToSql>>,
+    column: &str,
+    values: &[String],
+) {
+    if values.is_empty() {
+        return;
+    }
+    sql.push_str(" AND ");
+    sql.push_str(column);
+    sql.push_str(" NOT IN (");
+    for (i, v) in values.iter().enumerate() {
+        if i > 0 {
+            sql.push(',');
+        }
+        sql.push('?');
+        binds.push(Box::new(v.clone()));
+    }
+    sql.push(')');
+}
+
+/// Append a path-prefix exclusion. Each rule blocks both an exact match and
+/// any descendant path, while leaving NULL values (sessions without a cwd)
+/// unaffected — without `COALESCE` a NULL column would sink the whole row.
+fn append_prefix_exclusions(
+    sql: &mut String,
+    binds: &mut Vec<Box<dyn rusqlite::ToSql>>,
+    column: &str,
+    rules: &[String],
+) {
+    for rule in rules {
+        let trimmed = rule.trim_end_matches('/');
+        if trimmed.is_empty() {
+            continue;
+        }
+        sql.push_str(&format!(
+            " AND COALESCE({0}, '') <> ? AND COALESCE({0}, '') NOT LIKE ?",
+            column
+        ));
+        binds.push(Box::new(trimmed.to_string()));
+        binds.push(Box::new(format!("{}/%", trimmed)));
+    }
+}
+
+/// Append a plain "starts-with" exclusion (no trailing-slash handling). Used
+/// for raw `file_path` rules where the user may want to block by absolute
+/// file prefix rather than directory boundary.
+fn append_path_prefix_exclusions(
+    sql: &mut String,
+    binds: &mut Vec<Box<dyn rusqlite::ToSql>>,
+    column: &str,
+    rules: &[String],
+) {
+    for rule in rules {
+        if rule.is_empty() {
+            continue;
+        }
+        sql.push_str(&format!(" AND COALESCE({0}, '') NOT LIKE ?", column));
+        binds.push(Box::new(format!("{}%", rule)));
+    }
 }
 
 /// Convert raw user input into a safe FTS5 MATCH expression.

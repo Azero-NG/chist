@@ -146,6 +146,129 @@ fn cwd_filter_restricts_results() {
 }
 
 #[test]
+fn config_excludes_cwd_prefix_at_search_time() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let cache = tmp.path().join("cache");
+    let cfg_dir = tmp.path().join("config");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&cache).unwrap();
+    fs::create_dir_all(&cfg_dir).unwrap();
+
+    let projects = home.join(".claude").join("projects");
+    write(
+        &projects.join("a").join("dddddddd-dddd-dddd-dddd-dddddddddddd.jsonl"),
+        &[
+            r#"{"type":"user","sessionId":"dddddddd-dddd-dddd-dddd-dddddddddddd","cwd":"/Users/fake/keep","timestamp":"2026-04-15T10:00:00Z","message":{"role":"user","content":"unique cobalt token"}}"#,
+        ],
+    );
+    write(
+        &projects.join("b").join("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee.jsonl"),
+        &[
+            r#"{"type":"user","sessionId":"eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee","cwd":"/Users/fake/scratch/throwaway","timestamp":"2026-04-15T10:00:00Z","message":{"role":"user","content":"unique cobalt token"}}"#,
+        ],
+    );
+
+    let cfg_file = cfg_dir.join("config.toml");
+    fs::write(
+        &cfg_file,
+        r#"
+[exclude]
+cwds = ["/Users/fake/scratch"]
+"#,
+    )
+    .unwrap();
+
+    let bin = bin();
+
+    Command::new(&bin)
+        .arg("rebuild")
+        .env("HOME", &home)
+        .env("XDG_CACHE_HOME", &cache)
+        .output()
+        .unwrap();
+
+    // With config: only the /keep session should come back.
+    let out = Command::new(&bin)
+        .arg("search").arg("cobalt").arg("--format").arg("json")
+        .env("HOME", &home).env("XDG_CACHE_HOME", &cache)
+        .env("CHIST_CONFIG", &cfg_file)
+        .output().unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let r = v["results"].as_array().unwrap();
+    assert_eq!(r.len(), 1, "exclude rule should drop /scratch session");
+    assert_eq!(r[0]["cwd"], "/Users/fake/keep");
+    assert_eq!(v["filters"]["config_applied"], true);
+
+    // --no-config bypass: both sessions returned.
+    let out = Command::new(&bin)
+        .arg("search").arg("cobalt").arg("--no-config").arg("--format").arg("json")
+        .env("HOME", &home).env("XDG_CACHE_HOME", &cache)
+        .env("CHIST_CONFIG", &cfg_file)
+        .output().unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let r = v["results"].as_array().unwrap();
+    assert_eq!(r.len(), 2, "--no-config should ignore exclude rules");
+    assert_eq!(v["filters"]["config_applied"], false);
+}
+
+#[test]
+fn config_excludes_block_kind_at_search_time() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let cache = tmp.path().join("cache");
+    let cfg_dir = tmp.path().join("config");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&cache).unwrap();
+    fs::create_dir_all(&cfg_dir).unwrap();
+
+    let projects = home.join(".claude").join("projects");
+    // Two sessions: one matches via assistant text, the other only via a
+    // tool_result block. Excluding block_kind=tool_result should drop the second.
+    write(
+        &projects.join("p").join("ffffffff-ffff-ffff-ffff-ffffffffffff.jsonl"),
+        &[
+            r#"{"type":"user","sessionId":"ffffffff-ffff-ffff-ffff-ffffffffffff","cwd":"/Users/fake/p1","timestamp":"2026-04-15T10:00:00Z","message":{"role":"user","content":"hi"}}"#,
+            r#"{"type":"assistant","sessionId":"ffffffff-ffff-ffff-ffff-ffffffffffff","timestamp":"2026-04-15T10:00:30Z","message":{"role":"assistant","content":[{"type":"text","text":"unique magenta phrase here"}]}}"#,
+        ],
+    );
+    write(
+        &projects.join("p").join("99999999-9999-9999-9999-999999999999.jsonl"),
+        &[
+            r#"{"type":"user","sessionId":"99999999-9999-9999-9999-999999999999","cwd":"/Users/fake/p2","timestamp":"2026-04-15T10:00:00Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"x","content":"unique magenta phrase here"}]}}"#,
+        ],
+    );
+
+    let cfg_file = cfg_dir.join("config.toml");
+    fs::write(
+        &cfg_file,
+        r#"
+[exclude]
+block_kinds = ["tool_result"]
+"#,
+    )
+    .unwrap();
+
+    let bin = bin();
+    Command::new(&bin)
+        .arg("rebuild")
+        .env("HOME", &home)
+        .env("XDG_CACHE_HOME", &cache)
+        .output()
+        .unwrap();
+
+    let out = Command::new(&bin)
+        .arg("search").arg("magenta").arg("--format").arg("json")
+        .env("HOME", &home).env("XDG_CACHE_HOME", &cache)
+        .env("CHIST_CONFIG", &cfg_file)
+        .output().unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let r = v["results"].as_array().unwrap();
+    assert_eq!(r.len(), 1, "tool_result-only session should be dropped");
+    assert_eq!(r[0]["cwd"], "/Users/fake/p1");
+}
+
+#[test]
 fn subagent_session_does_not_overwrite_parent() {
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join("home");

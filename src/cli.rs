@@ -57,6 +57,10 @@ pub struct SearchOpts {
     /// running several searches back-to-back.
     #[arg(long)]
     pub no_scan: bool,
+
+    /// Ignore ~/.config/chist/config.toml exclude/filter rules for this run.
+    #[arg(long)]
+    pub no_config: bool,
 }
 
 #[derive(clap::ValueEnum, Debug, Clone, Copy)]
