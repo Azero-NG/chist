@@ -146,6 +146,53 @@ fn cwd_filter_restricts_results() {
 }
 
 #[test]
+fn search_returns_multiple_matches_per_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let cache = tmp.path().join("cache");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&cache).unwrap();
+
+    let projects = home.join(".claude").join("projects");
+    let jsonl = projects
+        .join("m")
+        .join("ddddddd1-dddd-dddd-dddd-dddddddddddd.jsonl");
+    // Three messages all matching "obsidian": expect matches array length 3,
+    // not the single best hit only.
+    write(
+        &jsonl,
+        &[
+            r#"{"type":"user","sessionId":"ddddddd1-dddd-dddd-dddd-dddddddddddd","cwd":"/Users/fake/m","timestamp":"2026-04-15T10:00:00Z","message":{"role":"user","content":"first mention of obsidian indigo"}}"#,
+            r#"{"type":"assistant","sessionId":"ddddddd1-dddd-dddd-dddd-dddddddddddd","timestamp":"2026-04-15T10:00:30Z","message":{"role":"assistant","content":[{"type":"text","text":"second time discussing obsidian indigo here"}]}}"#,
+            r#"{"type":"user","sessionId":"ddddddd1-dddd-dddd-dddd-dddddddddddd","cwd":"/Users/fake/m","timestamp":"2026-04-15T10:01:00Z","message":{"role":"user","content":"third reply about obsidian indigo at length"}}"#,
+        ],
+    );
+
+    let bin = bin();
+    Command::new(&bin).arg("rebuild")
+        .env("HOME", &home).env("XDG_CACHE_HOME", &cache)
+        .output().unwrap();
+
+    let out = Command::new(&bin)
+        .arg("search").arg("indigo").arg("--format").arg("json")
+        .env("HOME", &home).env("XDG_CACHE_HOME", &cache)
+        .output().unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let r = v["results"].as_array().unwrap();
+    assert_eq!(r.len(), 1, "still 1 result per session");
+
+    let matches = r[0]["matches"].as_array().unwrap();
+    assert_eq!(matches.len(), 3, "all three messages should appear as hits");
+    // First hit duplicates the top-level snippet for backward compat.
+    assert_eq!(r[0]["snippet"], matches[0]["snippet"]);
+    // Each hit carries its own role/block_kind/snippet.
+    for m in matches {
+        assert!(m["snippet"].as_str().unwrap().contains("indigo"));
+        assert!(m["score"].as_f64().is_some());
+    }
+}
+
+#[test]
 fn sync_command_picks_up_new_session() {
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join("home");

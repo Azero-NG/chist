@@ -31,11 +31,26 @@ pub struct ResultItem {
     pub started_at: Option<String>,
     pub last_activity: Option<String>,
     pub message_count: i64,
+    /// Best-rank snippet — kept at top level for backward compatibility with
+    /// existing JSON consumers. New consumers should prefer `matches`, which
+    /// also exposes lower-ranked hits in the same session.
     pub snippet: String,
     pub matched_role: String,
     pub matched_block_kind: String,
     pub score: f64,
+    /// All hits within this session, sorted by relevance (best first), capped
+    /// at `MAX_HITS_PER_SESSION`. The first entry duplicates the `snippet` /
+    /// `matched_role` / `matched_block_kind` / `score` fields above.
+    pub matches: Vec<MatchHit>,
     pub resume_command: String,
+}
+
+#[derive(Serialize)]
+pub struct MatchHit {
+    pub snippet: String,
+    pub role: String,
+    pub block_kind: String,
+    pub score: f64,
 }
 
 #[derive(Serialize)]
@@ -62,16 +77,23 @@ pub fn render_text(out: &SearchOutput) -> String {
     s.push('\n');
     for (i, r) in out.results.iter().enumerate() {
         s.push_str(&format!(
-            "{:>2}. {}{}\n    {} • {} • {} msgs\n    {}\n    $ {}\n\n",
+            "{:>2}. {}{}\n    {} • {} • {} msgs\n",
             i + 1,
             r.title,
             if r.is_subagent { "  [subagent]" } else { "" },
             r.cwd.clone().unwrap_or_else(|| "(unknown cwd)".into()),
             r.last_activity.clone().unwrap_or_else(|| "?".into()),
             r.message_count,
-            r.snippet.replace('\n', " "),
-            r.resume_command,
         ));
+        for hit in &r.matches {
+            s.push_str(&format!(
+                "    [{}/{}] {}\n",
+                hit.role,
+                hit.block_kind,
+                hit.snippet.replace('\n', " "),
+            ));
+        }
+        s.push_str(&format!("    $ {}\n\n", r.resume_command));
     }
     s
 }

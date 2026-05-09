@@ -1,11 +1,17 @@
 use crate::cli::{Format, SearchOpts};
 use crate::config::{self, Config};
 use crate::db;
-use crate::output::{Filters, ResultItem, SearchOutput, Stats};
+use crate::output::{Filters, MatchHit, ResultItem, SearchOutput, Stats};
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use rusqlite::params_from_iter;
+use std::collections::HashMap;
 use std::time::Instant;
+
+/// Cap on the number of snippets returned per session. Keeps payload small
+/// while still showing enough context to disambiguate which conversation a
+/// user is hunting for.
+const MAX_HITS_PER_SESSION: usize = 5;
 
 pub fn run(opts: SearchOpts) -> Result<()> {
     let conn = db::open()?;
@@ -53,13 +59,16 @@ pub fn run(opts: SearchOpts) -> Result<()> {
     //   2. Outer: JOIN sessions, GROUP BY session_id (SQLite picks the row
     //      with min rowid per group, which is the best-rank row because the
     //      inner is sorted by rank).
-    let inner_limit = (opts.limit * 25).max(200) as i64;
+    // Inner over-fetch budget. With per-session top-K we still want enough
+    // distinct sessions in the result set after Rust-side grouping, plus
+    // headroom for sessions with many hits.
+    let inner_limit = (opts.limit * MAX_HITS_PER_SESSION * 5).max(500) as i64;
     let mut sql = String::from(
         "SELECT
             s.session_id, s.claude_session_id, s.is_subagent, s.cwd, s.project_dir,
             s.started_at, s.last_activity, s.message_count,
             s.custom_title, s.ai_title, s.first_user_message,
-            MIN(m.rank) AS best_score,
+            m.rank AS rank,
             m.snip AS snip,
             m.role AS matched_role,
             m.block_kind AS matched_kind
@@ -115,8 +124,10 @@ pub fn run(opts: SearchOpts) -> Result<()> {
         binds.push(Box::new(cfg.filter.min_user_message_count));
     }
 
-    sql.push_str(" GROUP BY s.session_id ORDER BY best_score ASC, s.last_activity DESC LIMIT ?");
-    binds.push(Box::new(opts.limit as i64));
+    // No outer GROUP BY / LIMIT: rows arrive sorted by m.rank (best first),
+    // and Rust-side aggregation collapses them into one ResultItem per
+    // session while accumulating up to MAX_HITS_PER_SESSION snippets each.
+    sql.push_str(" ORDER BY rank ASC");
 
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
@@ -142,10 +153,27 @@ pub fn run(opts: SearchOpts) -> Result<()> {
         })
     })?;
 
-    let results: Vec<ResultItem> = rows
-        .filter_map(|r| r.ok())
-        .map(|r| build_result(r))
-        .collect();
+    // Aggregate rows → at most opts.limit ResultItems, each carrying up to
+    // MAX_HITS_PER_SESSION matches in rank order.
+    let mut acc: Vec<ResultItem> = Vec::new();
+    let mut idx: HashMap<String, usize> = HashMap::new();
+    for row in rows.filter_map(|r| r.ok()) {
+        if let Some(&i) = idx.get(&row.session_id) {
+            if acc[i].matches.len() < MAX_HITS_PER_SESSION {
+                acc[i].matches.push(row_to_hit(&row));
+            }
+            continue;
+        }
+        if acc.len() >= opts.limit {
+            // Already filled the requested number of distinct sessions; we
+            // only keep streaming because remaining rows might still belong
+            // to one of the sessions already in `acc`.
+            continue;
+        }
+        idx.insert(row.session_id.clone(), acc.len());
+        acc.push(build_result(row));
+    }
+    let results = acc;
 
     let query_duration = q_start.elapsed();
 
@@ -218,6 +246,7 @@ struct SqlRow {
 fn build_result(r: SqlRow) -> ResultItem {
     let (title, title_source) = pick_title(&r);
     let resume_command = build_resume_command(r.cwd.as_deref(), &r.claude_session_id);
+    let first_hit = row_to_hit(&r);
     ResultItem {
         session_id: r.session_id,
         claude_session_id: r.claude_session_id,
@@ -228,13 +257,23 @@ fn build_result(r: SqlRow) -> ResultItem {
         started_at: r.started_at.and_then(unix_to_iso),
         last_activity: r.last_activity.and_then(unix_to_iso),
         message_count: r.message_count,
-        snippet: r.snippet,
-        matched_role: r.matched_role,
-        matched_block_kind: r.matched_kind,
-        // bm25 returns negative numbers (closer to 0 = better). Flip sign so
-        // larger = better in the JSON output.
-        score: -r.best_score,
+        snippet: first_hit.snippet.clone(),
+        matched_role: first_hit.role.clone(),
+        matched_block_kind: first_hit.block_kind.clone(),
+        score: first_hit.score,
+        matches: vec![first_hit],
         resume_command,
+    }
+}
+
+fn row_to_hit(r: &SqlRow) -> MatchHit {
+    MatchHit {
+        snippet: r.snippet.clone(),
+        role: r.matched_role.clone(),
+        block_kind: r.matched_kind.clone(),
+        // bm25 returns negative numbers (closer to 0 = better); flip sign so
+        // larger = more relevant in JSON output.
+        score: -r.best_score,
     }
 }
 
