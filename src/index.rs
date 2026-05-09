@@ -154,6 +154,11 @@ pub fn incremental_sync(conn: &Connection, force: bool) -> Result<ScanReport> {
     }
     report.indexed_before = indexed.len();
 
+    // Build the tokenizer once per sync — Jieba::new allocates the ~5MB
+    // dictionary, so caching across reindex_file calls matters when many
+    // files changed at once.
+    let tokenizer = crate::tokenize::Tokenizer::load_active(conn)?;
+
     // Reindex new or modified files.
     for path in &on_disk {
         let meta = std::fs::metadata(path).ok();
@@ -171,7 +176,7 @@ pub fn incremental_sync(conn: &Connection, force: bool) -> Result<ScanReport> {
             }
         };
         if needs {
-            match reindex_file(conn, path) {
+            match reindex_file(conn, path, &tokenizer) {
                 Ok(_) => report.reindexed += 1,
                 Err(_) => report.failed += 1,
             }
@@ -233,8 +238,14 @@ fn append_sync_log(message: &str) -> Result<()> {
     Ok(())
 }
 
-/// Reindex a single jsonl file atomically.
-pub fn reindex_file(conn: &Connection, path: &Path) -> Result<()> {
+/// Reindex a single jsonl file atomically. The `tokenizer` argument must
+/// match the one recorded in `meta.tokenizer_id` so MATCH at query time
+/// sees the same token shapes as what we write here.
+pub fn reindex_file(
+    conn: &Connection,
+    path: &Path,
+    tokenizer: &crate::tokenize::Tokenizer,
+) -> Result<()> {
     let (session, blocks) = parse_file(path)?;
     if session.session_id.is_empty() {
         // Nothing parseable; record minimal stub so we don't keep retrying.
@@ -254,7 +265,7 @@ pub fn reindex_file(conn: &Connection, path: &Path) -> Result<()> {
     )?;
 
     insert_session(&tx, &session)?;
-    insert_blocks(&tx, &session.session_id, &blocks)?;
+    insert_blocks(&tx, &session.session_id, &blocks, tokenizer)?;
 
     tx.commit()?;
     Ok(())
@@ -290,14 +301,20 @@ fn insert_session(conn: &Connection, s: &ParsedSession) -> Result<()> {
     Ok(())
 }
 
-fn insert_blocks(conn: &Connection, session_id: &str, blocks: &[ParsedBlock]) -> Result<()> {
+fn insert_blocks(
+    conn: &Connection,
+    session_id: &str,
+    blocks: &[ParsedBlock],
+    tokenizer: &crate::tokenize::Tokenizer,
+) -> Result<()> {
     let mut stmt = conn.prepare(
         "INSERT INTO messages_fts (content, role, block_kind, session_id, msg_index, timestamp)
          VALUES (?, ?, ?, ?, ?, ?)",
     )?;
     for b in blocks {
+        let content = tokenizer.for_index(&b.content);
         stmt.execute(params![
-            b.content,
+            content,
             b.role,
             b.block_kind,
             session_id,
@@ -324,13 +341,23 @@ pub fn rebuild(opts: crate::cli::RebuildOpts) -> Result<()> {
     let conn = db::open()?;
     log!("db opened, schema ready ({}ms)", t.elapsed().as_millis());
 
+    // Tokenizer comes from config (default: jieba). Stamp the choice into
+    // meta before wiping so subsequent search/sync invocations see it; if
+    // rebuild fails midway we still want the meta to reflect the table that
+    // was just (re)created.
+    let cfg = crate::config::load()?;
+    let backend = crate::tokenize::Backend::parse(&cfg.tokenizer.backend)?;
+    let tokenizer = crate::tokenize::Tokenizer::new(backend);
+    log!("tokenizer backend: {}", backend.id());
+
     let t = Instant::now();
     // Fast wipe: DROP + recreate the FTS5 table (segment files vanish in O(1),
     // accumulated fragmentation goes with them). Plain DELETE on `sessions`
     // gets SQLite's truncate optimization.
-    db::recreate_fts_table(&conn)?;
+    db::recreate_fts_table(&conn, backend.fts5_clause())?;
     conn.execute_batch("DELETE FROM sessions;")?;
     db::set_meta(&conn, "last_full_scan_at", "0")?;
+    db::set_meta(&conn, crate::tokenize::TOKENIZER_META_KEY, backend.id())?;
     log!("tables cleared ({}ms)", t.elapsed().as_millis());
 
     let t = Instant::now();
@@ -392,7 +419,7 @@ pub fn rebuild(opts: crate::cli::RebuildOpts) -> Result<()> {
         }
         let ins_start = Instant::now();
         insert_session(&tx_db, &s)?;
-        insert_blocks(&tx_db, &s.session_id, &b)?;
+        insert_blocks(&tx_db, &s.session_id, &b, &tokenizer)?;
         total_insert_ns += ins_start.elapsed().as_nanos();
         written += 1;
         if progress_every > 0 && written % progress_every == 0 {

@@ -2,6 +2,7 @@ use crate::cli::{Format, SearchOpts};
 use crate::config::{self, Config};
 use crate::db;
 use crate::output::{Filters, MatchHit, ResultItem, SearchOutput, Stats};
+use crate::tokenize::Tokenizer;
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use rusqlite::params_from_iter;
@@ -30,6 +31,25 @@ pub fn run(opts: SearchOpts) -> Result<()> {
     };
     let cfg_active = !opts.no_config && config::config_path().map(|p| p.exists()).unwrap_or(false);
 
+    // Authoritative tokenizer for the *index* is what's recorded in `meta`.
+    // The config might disagree (user changed config without rebuilding); in
+    // that case the index wins because that's how the bytes on disk were
+    // tokenized. Surface the drift on stderr so users notice.
+    let tokenizer = Tokenizer::load_active(&conn)?;
+    if !opts.no_config {
+        if let Ok(cfg_backend) = crate::tokenize::Backend::parse(&cfg.tokenizer.backend) {
+            if cfg_backend != tokenizer.backend() {
+                eprintln!(
+                    "warning: config requests tokenizer `{}` but index was built with `{}`. \
+                     Searching with `{}`. Run `chist rebuild` to switch.",
+                    cfg_backend.id(),
+                    tokenizer.backend().id(),
+                    tokenizer.backend().id()
+                );
+            }
+        }
+    }
+
     let since_ts = opts
         .since
         .as_deref()
@@ -43,10 +63,12 @@ pub fn run(opts: SearchOpts) -> Result<()> {
         .transpose()
         .context("invalid --until")?;
 
-    // FTS5 has its own query DSL with operators (-, AND, OR, NEAR, etc).
-    // To make the CLI predictable for arbitrary user input we sanitize into
-    // a phrase or whitespace-AND query of quoted tokens.
-    let fts_query = sanitize_fts_query(&opts.query);
+    // Run the user's query through the same tokenizer the index used, then
+    // wrap each token to neutralize FTS5 operator characters. For Jieba this
+    // means "前端开发" arrives as `"前端" "开发"`; for Trigram/Unicode61 the
+    // tokenizer is a no-op and we just sanitize whitespace.
+    let pretokenized = tokenizer.for_query(&opts.query);
+    let fts_query = sanitize_fts_query(&pretokenized);
 
     let q_start = Instant::now();
 
@@ -268,13 +290,49 @@ fn build_result(r: SqlRow) -> ResultItem {
 
 fn row_to_hit(r: &SqlRow) -> MatchHit {
     MatchHit {
-        snippet: r.snippet.clone(),
+        snippet: prettify_snippet(&r.snippet),
         role: r.matched_role.clone(),
         block_kind: r.matched_kind.clone(),
         // bm25 returns negative numbers (closer to 0 = better); flip sign so
         // larger = more relevant in JSON output.
         score: -r.best_score,
     }
+}
+
+/// Snippets are pulled directly from the FTS5 content column, which under
+/// jieba carries the post-tokenization form (each Chinese word separated by
+/// a space). That looks ugly when shown to a human ("前 端 框 架"). This
+/// best-effort cleanup removes a single space sandwiched between two CJK
+/// codepoints — preserving English/CJK boundaries ("the 前端 framework"
+/// stays correct).
+fn prettify_snippet(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if i + 2 < chars.len()
+            && chars[i + 1] == ' '
+            && is_cjk(chars[i])
+            && is_cjk(chars[i + 2])
+        {
+            out.push(chars[i]);
+            i += 2; // drop the space, fall through to chars[i+2]
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+fn is_cjk(c: char) -> bool {
+    matches!(
+        c,
+        '\u{4E00}'..='\u{9FFF}'   // CJK Unified Ideographs
+        | '\u{3400}'..='\u{4DBF}' // CJK Extension A
+        | '\u{3000}'..='\u{303F}' // CJK Symbols and Punctuation
+        | '\u{FF00}'..='\u{FFEF}' // Halfwidth/Fullwidth Forms
+    )
 }
 
 fn pick_title(r: &SqlRow) -> (String, String) {

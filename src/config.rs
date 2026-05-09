@@ -10,8 +10,27 @@ use std::path::PathBuf;
 #[derive(Deserialize, Debug, Default, Clone)]
 #[serde(default)]
 pub struct Config {
+    pub tokenizer: TokenizerConfig,
     pub exclude: ExcludeRules,
     pub filter: FilterRules,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(default)]
+pub struct TokenizerConfig {
+    /// Tokenizer backend identifier — one of `jieba`, `trigram`, `unicode61`.
+    /// `jieba` is the default because it gives the best CJK recall (single-
+    /// and double-character Chinese queries hit) at the cost of a ~5MB
+    /// dictionary embedded in the binary.
+    pub backend: String,
+}
+
+impl Default for TokenizerConfig {
+    fn default() -> Self {
+        Self {
+            backend: "jieba".to_string(),
+        }
+    }
 }
 
 #[derive(Deserialize, Debug, Default, Clone)]
@@ -80,6 +99,17 @@ mod tests {
         let c: Config = toml::from_str("").unwrap();
         assert!(c.exclude.cwds.is_empty());
         assert_eq!(c.filter.min_message_count, 0);
+        assert_eq!(c.tokenizer.backend, "jieba");
+    }
+
+    #[test]
+    fn tokenizer_section_parses() {
+        let src = r#"
+            [tokenizer]
+            backend = "trigram"
+        "#;
+        let c: Config = toml::from_str(src).unwrap();
+        assert_eq!(c.tokenizer.backend, "trigram");
     }
 
     #[test]

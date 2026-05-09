@@ -146,6 +146,96 @@ fn cwd_filter_restricts_results() {
 }
 
 #[test]
+fn jieba_default_handles_two_char_cjk_query() {
+    // The whole point of switching the default tokenizer to jieba: a 2-char
+    // CJK query like "前端" should now hit, where trigram would fail.
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let cache = tmp.path().join("cache");
+    let cfg_dir = tmp.path().join("config");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&cache).unwrap();
+    fs::create_dir_all(&cfg_dir).unwrap();
+
+    let projects = home.join(".claude").join("projects");
+    write(
+        &projects.join("z").join("99999999-0000-0000-0000-999999999999.jsonl"),
+        &[
+            r#"{"type":"user","sessionId":"99999999-0000-0000-0000-999999999999","cwd":"/Users/fake/z","timestamp":"2026-04-15T10:00:00Z","message":{"role":"user","content":"我们来讨论一下前端的实现细节"}}"#,
+        ],
+    );
+
+    // Empty config — defaults to jieba.
+    let cfg_file = cfg_dir.join("config.toml");
+    fs::write(&cfg_file, "").unwrap();
+
+    let bin = bin();
+    let out = Command::new(&bin).arg("rebuild")
+        .env("HOME", &home).env("XDG_CACHE_HOME", &cache)
+        .env("CHIST_CONFIG", &cfg_file)
+        .output().unwrap();
+    assert!(out.status.success(), "rebuild stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    // 2-char query that would fail under trigram.
+    let out = Command::new(&bin)
+        .arg("search").arg("前端").arg("--format").arg("json")
+        .env("HOME", &home).env("XDG_CACHE_HOME", &cache)
+        .env("CHIST_CONFIG", &cfg_file)
+        .output().unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let r = v["results"].as_array().unwrap();
+    assert_eq!(r.len(), 1, "jieba should find 2-char CJK; stdout: {}", String::from_utf8_lossy(&out.stdout));
+
+    // Also "实现" (a different jieba-segmented word in the same sentence).
+    let out = Command::new(&bin)
+        .arg("search").arg("实现").arg("--format").arg("json")
+        .env("HOME", &home).env("XDG_CACHE_HOME", &cache)
+        .env("CHIST_CONFIG", &cfg_file)
+        .output().unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["results"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn trigram_backend_still_supported_via_config() {
+    // Users can opt back into trigram by setting tokenizer.backend = "trigram".
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let cache = tmp.path().join("cache");
+    let cfg_dir = tmp.path().join("config");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&cache).unwrap();
+    fs::create_dir_all(&cfg_dir).unwrap();
+
+    let projects = home.join(".claude").join("projects");
+    write(
+        &projects.join("t").join("88888888-0000-0000-0000-888888888888.jsonl"),
+        &[
+            r#"{"type":"user","sessionId":"88888888-0000-0000-0000-888888888888","cwd":"/Users/fake/t","timestamp":"2026-04-15T10:00:00Z","message":{"role":"user","content":"trigram baseline english query phrase"}}"#,
+        ],
+    );
+
+    let cfg_file = cfg_dir.join("config.toml");
+    fs::write(&cfg_file, r#"[tokenizer]
+backend = "trigram"
+"#).unwrap();
+
+    let bin = bin();
+    Command::new(&bin).arg("rebuild")
+        .env("HOME", &home).env("XDG_CACHE_HOME", &cache)
+        .env("CHIST_CONFIG", &cfg_file)
+        .output().unwrap();
+
+    let out = Command::new(&bin)
+        .arg("search").arg("baseline").arg("--format").arg("json")
+        .env("HOME", &home).env("XDG_CACHE_HOME", &cache)
+        .env("CHIST_CONFIG", &cfg_file)
+        .output().unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["results"].as_array().unwrap().len(), 1);
+}
+
+#[test]
 fn search_returns_multiple_matches_per_session() {
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join("home");

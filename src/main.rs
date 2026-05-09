@@ -6,6 +6,7 @@ mod index;
 mod output;
 mod parse;
 mod search;
+mod tokenize;
 
 use anyhow::Result;
 use clap::Parser;

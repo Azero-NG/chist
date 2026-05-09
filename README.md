@@ -176,7 +176,39 @@ cp skill/SKILL.md ~/.claude/skills/claude-history/
 - 增量更新：见上方"增量更新（Stop hook）"。`chist search` 本身只查 DB
 - subagent session：路径含 `subagents/` 的 jsonl 单独建条目，不被父 session 覆盖
 - 索引内容：`text` / `thinking` / `tool_use` 名称+参数 / `tool_result` 输出，每块上限 100KB
-- Tokenizer：`trigram`，中英混合直接搜；2 字 CJK 命中率较低（trigram 限制）
+- Tokenizer：默认 `jieba`，单/双字 CJK 直接命中；可在 config 切回 `trigram`，详见下节
+
+## 分词器（Tokenizer）
+
+`config.toml` 里的 `[tokenizer]` 段决定索引和查询如何切词：
+
+```toml
+[tokenizer]
+backend = "jieba"        # 默认；中文分词，1-2 字 CJK 也能命中
+# backend = "trigram"    # 旧默认；3-char 滑窗，CJK 至少 3 字才能匹配
+# backend = "unicode61"  # 仅按空白/标点切，中文召回最差
+```
+
+| backend | "前端" 命中 | "实现" 命中 | 索引大小 | 二进制大小 |
+|---|---|---|---|---|
+| `jieba` (默认) | ✓ | ✓ | 小（按词索引） | +5MB（词典内嵌） |
+| `trigram` | ✗ | ✗ | 大（trigram 膨胀） | 无附加 |
+| `unicode61` | ✗（CJK 不切） | ✗ | 小 | 无附加 |
+
+切换 backend **必须 rebuild**：分词器是索引时和查询时都参与的协议，存在 DB 的 `meta.tokenizer_id` 里。
+
+```sh
+# 切到 trigram：
+echo '[tokenizer]
+backend = "trigram"' >> ~/.config/chist/config.toml
+chist rebuild
+```
+
+如果配置和索引不一致（改了 config 但没 rebuild），`chist search` 会以 **索引为准**（DB 实际分词器）继续工作，并在 stderr 提示：
+
+```
+warning: config requests tokenizer `trigram` but index was built with `jieba`. Searching with `jieba`. Run `chist rebuild` to switch.
+```
 
 ## 索引位置
 

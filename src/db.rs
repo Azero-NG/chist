@@ -4,20 +4,26 @@ use std::path::{Path, PathBuf};
 
 const SCHEMA_VERSION: i64 = 1;
 
-/// Single source of truth for the FTS5 schema. Used both at first-time
-/// `init_schema` and when `rebuild` drops + recreates the FTS table to wipe
-/// segment fragmentation.
-pub const FTS5_CREATE_SQL: &str = "
-    CREATE VIRTUAL TABLE messages_fts USING fts5(
-        content,
-        role        UNINDEXED,
-        block_kind  UNINDEXED,
-        session_id  UNINDEXED,
-        msg_index   UNINDEXED,
-        timestamp   UNINDEXED,
-        tokenize='trigram'
-    );
-";
+/// Build the `CREATE VIRTUAL TABLE messages_fts ...` statement with the
+/// given FTS5 tokenizer clause (e.g. `tokenize='trigram'`).
+///
+/// `init_schema` only creates the table if it doesn't already exist, so on
+/// fresh databases we default to `trigram` for backward compatibility with
+/// indexes built before tokenizer config existed. `rebuild` drops + recreates
+/// the table with whatever clause the active tokenizer dictates.
+pub fn fts5_create_sql(tokenize_clause: &str) -> String {
+    format!(
+        "CREATE VIRTUAL TABLE messages_fts USING fts5(
+            content,
+            role        UNINDEXED,
+            block_kind  UNINDEXED,
+            session_id  UNINDEXED,
+            msg_index   UNINDEXED,
+            timestamp   UNINDEXED,
+            {tokenize_clause}
+        );"
+    )
+}
 
 /// Root directory for chist's on-disk state (index.db, sync.log, ...).
 ///
@@ -101,8 +107,10 @@ fn init_schema(conn: &Connection) -> Result<()> {
 
         "#,
     )?;
-    // Created via the central FTS5_CREATE_SQL so rebuild can DROP + recreate
-    // from the exact same shape.
+    // Only create messages_fts on a fresh DB; defer tokenizer choice to
+    // `rebuild`. Use trigram as the legacy default — `search` reads the
+    // actual tokenizer from the `tokenizer_id` meta entry (or falls back
+    // to "trigram" for older indexes that pre-date the meta key).
     let exists: bool = conn
         .query_row(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages_fts'",
@@ -111,7 +119,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         )
         .unwrap_or(false);
     if !exists {
-        conn.execute_batch(FTS5_CREATE_SQL)?;
+        conn.execute_batch(&fts5_create_sql("tokenize='trigram'"))?;
     }
 
     let current: Option<i64> = conn
@@ -139,10 +147,12 @@ fn init_schema(conn: &Connection) -> Result<()> {
 }
 
 /// Drop and recreate the FTS5 virtual table — fast wipe that also discards
-/// any accumulated segment fragmentation. Used by `rebuild`.
-pub fn recreate_fts_table(conn: &Connection) -> Result<()> {
+/// any accumulated segment fragmentation. Used by `rebuild`. Caller passes
+/// the exact `tokenize='...'` clause so the new table matches the active
+/// tokenizer backend.
+pub fn recreate_fts_table(conn: &Connection, tokenize_clause: &str) -> Result<()> {
     conn.execute_batch("DROP TABLE IF EXISTS messages_fts;")?;
-    conn.execute_batch(FTS5_CREATE_SQL)?;
+    conn.execute_batch(&fts5_create_sql(tokenize_clause))?;
     Ok(())
 }
 
