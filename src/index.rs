@@ -234,7 +234,11 @@ pub fn rebuild(opts: crate::cli::RebuildOpts) -> Result<()> {
     log!("db opened, schema ready ({}ms)", t.elapsed().as_millis());
 
     let t = Instant::now();
-    conn.execute_batch("DELETE FROM messages_fts; DELETE FROM sessions;")?;
+    // Fast wipe: DROP + recreate the FTS5 table (segment files vanish in O(1),
+    // accumulated fragmentation goes with them). Plain DELETE on `sessions`
+    // gets SQLite's truncate optimization.
+    db::recreate_fts_table(&conn)?;
+    conn.execute_batch("DELETE FROM sessions;")?;
     db::set_meta(&conn, "last_full_scan_at", "0")?;
     log!("tables cleared ({}ms)", t.elapsed().as_millis());
 

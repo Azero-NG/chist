@@ -4,6 +4,21 @@ use std::path::{Path, PathBuf};
 
 const SCHEMA_VERSION: i64 = 1;
 
+/// Single source of truth for the FTS5 schema. Used both at first-time
+/// `init_schema` and when `rebuild` drops + recreates the FTS table to wipe
+/// segment fragmentation.
+pub const FTS5_CREATE_SQL: &str = "
+    CREATE VIRTUAL TABLE messages_fts USING fts5(
+        content,
+        role        UNINDEXED,
+        block_kind  UNINDEXED,
+        session_id  UNINDEXED,
+        msg_index   UNINDEXED,
+        timestamp   UNINDEXED,
+        tokenize='trigram'
+    );
+";
+
 pub fn db_path() -> Result<PathBuf> {
     let cache = dirs::cache_dir().context("could not resolve cache directory")?;
     Ok(cache.join("chist").join("index.db"))
@@ -60,17 +75,20 @@ fn init_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_sessions_file_path ON sessions(file_path);
         CREATE INDEX IF NOT EXISTS idx_sessions_is_subagent ON sessions(is_subagent);
 
-        CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-            content,
-            role        UNINDEXED,
-            block_kind  UNINDEXED,
-            session_id  UNINDEXED,
-            msg_index   UNINDEXED,
-            timestamp   UNINDEXED,
-            tokenize='trigram'
-        );
         "#,
     )?;
+    // Created via the central FTS5_CREATE_SQL so rebuild can DROP + recreate
+    // from the exact same shape.
+    let exists: bool = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages_fts'",
+            [],
+            |_| Ok(true),
+        )
+        .unwrap_or(false);
+    if !exists {
+        conn.execute_batch(FTS5_CREATE_SQL)?;
+    }
 
     let current: Option<i64> = conn
         .query_row(
@@ -93,6 +111,14 @@ fn init_schema(conn: &Connection) -> Result<()> {
             )?;
         }
     }
+    Ok(())
+}
+
+/// Drop and recreate the FTS5 virtual table — fast wipe that also discards
+/// any accumulated segment fragmentation. Used by `rebuild`.
+pub fn recreate_fts_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch("DROP TABLE IF EXISTS messages_fts;")?;
+    conn.execute_batch(FTS5_CREATE_SQL)?;
     Ok(())
 }
 
