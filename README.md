@@ -19,8 +19,8 @@ Supported platforms: macOS (Intel + Apple Silicon), Linux x86_64 / aarch64 (musl
 The script installs to `~/.local/bin/chist`. Override the destination with `CHIST_INSTALL_DIR`, or pin a version:
 
 ```sh
-# install to a custom directory
-CHIST_INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Azero-NG/chist/master/install.sh | sh
+# install to a custom directory (note: env var goes on the `sh` side of the pipe)
+curl -fsSL https://raw.githubusercontent.com/Azero-NG/chist/master/install.sh | CHIST_INSTALL_DIR=/usr/local/bin sh
 
 # pin a specific release
 curl -fsSL https://raw.githubusercontent.com/Azero-NG/chist/master/install.sh | sh -s -- v0.1.0

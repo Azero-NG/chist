@@ -19,8 +19,8 @@ curl -fsSL https://raw.githubusercontent.com/Azero-NG/chist/master/install.sh | 
 脚本默认装到 `~/.local/bin/chist`。可以用 `CHIST_INSTALL_DIR` 改装到别处，或锁定版本：
 
 ```sh
-# 装到自定义目录
-CHIST_INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Azero-NG/chist/master/install.sh | sh
+# 装到自定义目录（注意：环境变量要写在管道右侧的 sh 上才生效）
+curl -fsSL https://raw.githubusercontent.com/Azero-NG/chist/master/install.sh | CHIST_INSTALL_DIR=/usr/local/bin sh
 
 # 锁定到指定版本
 curl -fsSL https://raw.githubusercontent.com/Azero-NG/chist/master/install.sh | sh -s -- v0.1.0
