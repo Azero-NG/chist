@@ -22,11 +22,13 @@ The skill teaches Claude Code when to call `chist` for you ("what was that conve
 
 ```sh
 # Global — ~/.claude/skills/, available across all projects
-npx skills add -g https://github.com/Azero-NG/chist/tree/main/skills/claude-history
+npx skills add -g Azero-NG/chist
 
 # Or per-project — ./.claude/skills/
-npx skills add https://github.com/Azero-NG/chist/tree/main/skills/claude-history
+npx skills add Azero-NG/chist
 ```
+
+The `owner/repo` shorthand picks up every skill under `skills/` in this repo (currently just `claude-history`).
 
 Manual install if you'd rather not use npx:
 

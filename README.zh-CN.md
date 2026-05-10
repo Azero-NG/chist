@@ -22,11 +22,13 @@ skill 让 Claude Code 知道什么时候帮你调 `chist`（你说"上次那个 
 
 ```sh
 # 全局安装到 ~/.claude/skills/，所有项目可用
-npx skills add -g https://github.com/Azero-NG/chist/tree/main/skills/claude-history
+npx skills add -g Azero-NG/chist
 
 # 或仅装到当前项目 ./.claude/skills/
-npx skills add https://github.com/Azero-NG/chist/tree/main/skills/claude-history
+npx skills add Azero-NG/chist
 ```
+
+`owner/repo` 简写会自动扫描本仓库 `skills/` 目录下所有 skill（目前只有 `claude-history` 一个）。
 
 不想用 npx 的话手动复制：
 
