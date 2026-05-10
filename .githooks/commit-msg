@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Reject commit messages containing CJK characters.
+# Triggers on Chinese (Han), Japanese (Hiragana / Katakana), and Korean
+# (Hangul). Comment lines starting with `#` are stripped first because git
+# discards them before the actual commit.
+#
+# To bypass once (not recommended), run: git commit --no-verify
+
+set -e
+
+msg_file="$1"
+
+if grep -v '^#' "$msg_file" \
+    | perl -CSD -ne 'BEGIN{$f=0} $f=1 if /[\p{Han}\p{Hiragana}\p{Katakana}\p{Hangul}]/; END{exit $f}'
+then
+    exit 0
+fi
+
+cat >&2 <<'EOF'
+✗ commit message must be English (CJK characters detected).
+  Edit the message and retry. To bypass once: git commit --no-verify
+EOF
+exit 1
