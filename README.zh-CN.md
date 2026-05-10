@@ -172,9 +172,21 @@ chist uninstall-hook     # 反向操作；只移除 chist 自己写入的条目
 
 ## 作为 Claude Code skill
 
+推荐用 [vercel-labs/skills 的 `skills` CLI](https://github.com/vercel-labs/skills) 一键安装：
+
+```sh
+# 全局安装到 ~/.claude/skills/，所有项目可用
+npx skills add -g https://github.com/Azero-NG/chist/tree/main/skills/claude-history
+
+# 或仅安装到当前项目 ./.claude/skills/
+npx skills add https://github.com/Azero-NG/chist/tree/main/skills/claude-history
+```
+
+不想用 npx 的话手动复制：
+
 ```sh
 mkdir -p ~/.claude/skills/claude-history
-cp skill/SKILL.md ~/.claude/skills/claude-history/
+cp skills/claude-history/SKILL.md ~/.claude/skills/claude-history/
 ```
 
 之后在 Claude Code 里描述场景（"上次我们聊那个 X 的对话怎么找"）会自动触发。

@@ -172,9 +172,21 @@ To run one manually (bypass cooldown and the hook): `chist sync --force`.
 
 ## As a Claude Code skill
 
+The recommended one-liner uses the [`skills` CLI from vercel-labs/skills](https://github.com/vercel-labs/skills):
+
+```sh
+# Global — installs into ~/.claude/skills/, available across all projects
+npx skills add -g https://github.com/Azero-NG/chist/tree/main/skills/claude-history
+
+# Or per-project — installs into ./.claude/skills/
+npx skills add https://github.com/Azero-NG/chist/tree/main/skills/claude-history
+```
+
+Manual install if you prefer not to run npx:
+
 ```sh
 mkdir -p ~/.claude/skills/claude-history
-cp skill/SKILL.md ~/.claude/skills/claude-history/
+cp skills/claude-history/SKILL.md ~/.claude/skills/claude-history/
 ```
 
 After this, describing the situation in Claude Code ("what was that conversation about X?") triggers chist automatically.
