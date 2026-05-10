@@ -13,7 +13,7 @@ description: 在用户过往所有 Claude Code 会话里全文搜索，找到指
 chist search "<query>" [--cwd <prefix>] [--since <date>] [--until <date>] [--limit <n>] [--no-scan]
 ```
 
-- `--cwd`: 限定到某项目根目录前缀（如 `--cwd /Users/azero/mine/llm`）
+- `--cwd`: 限定到某项目根目录前缀（如 `--cwd ~/projects/myapp`）
 - `--since` / `--until`: 接受 `7d`（N 天前）/ `2026-04-15` / RFC3339
 - `--limit`: 默认 20，建议给 AI 用时设 5
 - `--no-scan`: 跳过增量 mtime 扫描，仅查现有索引（连续多次查询时使用，省 ~500ms-2s）

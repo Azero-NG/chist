@@ -1,1 +1,4 @@
 /target
+
+# Claude Code per-project state (auto-copied skills, local settings, etc.)
+/.claude/
