@@ -8,9 +8,29 @@
 
 ### 1. `chist` 二进制
 
+**一键安装（推荐）** —— 自动下载预编译的静态二进制，不需要 Rust 工具链：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Azero-NG/chist/master/install.sh | sh
+```
+
+支持平台：macOS（Intel + Apple Silicon）、Linux x86_64 / aarch64（musl 完全静态）。
+
+脚本默认装到 `~/.local/bin/chist`。可以用 `CHIST_INSTALL_DIR` 改装到别处，或锁定版本：
+
+```sh
+# 装到自定义目录
+CHIST_INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Azero-NG/chist/master/install.sh | sh
+
+# 锁定到指定版本
+curl -fsSL https://raw.githubusercontent.com/Azero-NG/chist/master/install.sh | sh -s -- v0.1.0
+```
+
+**从源码构建**（需要 Rust 工具链）：
+
 ```sh
 cargo install --path .
-# 或本地构建
+# 或
 cargo build --release
 ```
 

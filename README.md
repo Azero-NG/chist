@@ -8,9 +8,29 @@ Indexes the session jsonl files under `~/.claude/projects/*/` into SQLite FTS5 s
 
 ### 1. The `chist` binary
 
+**One-line install (recommended)** — fetches a prebuilt static binary; no Rust toolchain required:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Azero-NG/chist/master/install.sh | sh
+```
+
+Supported platforms: macOS (Intel + Apple Silicon), Linux x86_64 / aarch64 (musl, fully static).
+
+The script installs to `~/.local/bin/chist`. Override the destination with `CHIST_INSTALL_DIR`, or pin a version:
+
+```sh
+# install to a custom directory
+CHIST_INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Azero-NG/chist/master/install.sh | sh
+
+# pin a specific release
+curl -fsSL https://raw.githubusercontent.com/Azero-NG/chist/master/install.sh | sh -s -- v0.1.0
+```
+
+**Build from source** (needs a Rust toolchain):
+
 ```sh
 cargo install --path .
-# or build locally
+# or
 cargo build --release
 ```
 
