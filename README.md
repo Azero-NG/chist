@@ -1,139 +1,141 @@
-# chist — Claude Code 历史对话搜索
+English | [简体中文](./README.zh-CN.md)
 
-把 `~/.claude/projects/*/` 下的 session jsonl 索引成 SQLite FTS5，给 AI 提供全文检索能力，让你能根据描述快速切回某个历史对话。
+# chist — full-text search for Claude Code conversation history
 
-## 安装
+Indexes the session jsonl files under `~/.claude/projects/*/` into SQLite FTS5 so an AI (or you) can locate a past conversation by topic and jump back into it.
+
+## Install
 
 ```sh
 cargo install --path .
-# 或本地构建
+# or build locally
 cargo build --release
 ```
 
-二进制：`~/.cargo/bin/chist`（cargo install 后），或 `target/release/chist`。
+Binary lives at `~/.cargo/bin/chist` (after `cargo install`) or `target/release/chist`.
 
-## 用法
+## Usage
 
 ```sh
-# 首次：建索引（约 13 秒，2900+ session × ~9GB jsonl）
+# First time: build the index (~13s for ~2900 sessions / ~9GB jsonl)
 chist rebuild
 
-# 注册 Stop / SubagentStop hook，让 Claude Code 每个 turn 结束自动增量更新
+# Register Stop / SubagentStop hooks so Claude Code keeps the index warm
 chist install-hook
 
-# 查询
+# Search
 chist search "rust async retry"
 chist search "claude-mem" --limit 5 --format text
 chist search "向量数据库" --cwd /Users/me/mine/llm --since 30d
 
-# 手动触发一次增量同步（hook 兜底；通常不需要直接调）
+# Trigger an incremental sync manually (the hook normally handles this)
 chist sync
 
-# 查索引状态
+# Inspect index state
 chist stats
 ```
 
-输出 JSON 格式（默认）；含 `session_id` / `cwd` / `title` / `snippet` / `score` / `resume_command`。
+Output is JSON by default with `session_id` / `cwd` / `title` / `snippet` / `score` / `resume_command`.
 
-`resume_command` 形如 `cd '<cwd>' && claude --resume <session-id>`，可直接粘到终端。
+`resume_command` is shaped like `cd '<cwd>' && claude --resume <session-id>` — paste straight into a terminal.
 
-## 选项
+## Options
 
 ```
 chist search <query> [options]
-  --cwd <prefix>       项目根目录前缀过滤
+  --cwd <prefix>       restrict to sessions whose cwd starts with <prefix>
   --since <date>       7d / 2026-04-15 / RFC3339
   --until <date>
-  --limit <n>          默认 20
-  --format json|text   默认 json
-  --no-scan            （历史选项；已 no-op，增量同步改由 hook 驱动）
-  --no-config          忽略 ~/.config/chist/config.toml 的过滤规则
-  --snippet-tokens <N> 命中周边的 token 数，覆盖配置（FTS5 限制 1-64）
+  --limit <n>          default 20
+  --format json|text   default json
+  --no-scan            (legacy; now a no-op — sync is hook-driven)
+  --no-config          ignore exclude/filter rules in ~/.config/chist/config.toml
+  --snippet-tokens <N> tokens of context around each hit (FTS5 caps at 1..=64)
 ```
 
-## 配置过滤
+## Search-time filters (config.toml)
 
-可选配置文件：默认放在 `~/.config/chist/config.toml`。文件不存在时所有规则视为空，**只在搜索阶段生效**（不影响索引内容，规则改了不需要 rebuild）。
+Optional config file at `~/.config/chist/config.toml`. If absent, no rules apply. Rules **only run at search time** — changing them does not require a rebuild.
 
-路径优先级：
+Lookup order:
 
 ```
-$CHIST_CONFIG          # 完整路径，集成测试与一次性覆盖用
+$CHIST_CONFIG          # explicit path; mainly for tests / one-off overrides
 $XDG_CONFIG_HOME/chist/config.toml
-~/.config/chist/config.toml   # 默认
+~/.config/chist/config.toml   # default
 ```
 
-完整字段（全部可选，缺省取默认值）：
+Full schema (every field optional, omitted keys take their default):
 
 ```toml
 [search]
-# 命中周边显示多少 token 的上下文。FTS5 限制 1-64，超出会自动 clamp。
-# 默认 16。CLI 的 --snippet-tokens 会覆盖此值。
+# Tokens of context the FTS5 snippet() builds around each match. FTS5 clamps
+# this to 1..=64. Default 16. The CLI flag --snippet-tokens overrides it.
 snippet_tokens = 16
 
 [exclude]
-# 排除这些 cwd 下的所有 session（前缀按目录边界匹配：
-# "/Users/me/scratch" 排除 /Users/me/scratch 与 /Users/me/scratch/foo,
-# 但不会误伤 /Users/me/scratchpad）。NULL cwd 的 session 不受影响。
+# Drop sessions whose cwd matches any prefix on a directory boundary:
+#   "/Users/me/scratch" excludes "/Users/me/scratch" and "/Users/me/scratch/foo"
+#   but does NOT touch "/Users/me/scratchpad". Sessions with NULL cwd are kept.
 cwds = [
     "/Users/me/scratch",
     "/tmp",
 ]
 
-# 排除 ~/.claude/projects 下的目录名（同样目录边界前缀匹配）
+# Same boundary-prefix matching, but against the directory under ~/.claude/projects.
 project_dirs = [
     # "-Users-me-scratch",
 ]
 
-# 排除 jsonl 文件路径前缀（原始字符串前缀，不做目录边界处理）
+# Plain string-prefix exclusion against jsonl file_path (no directory boundary).
 file_paths = [
     # "/Users/me/.claude/projects/-Users-me-scratch/",
 ]
 
-# 按 session UUID 精确黑名单（chist 表里的 session_id；subagent 写作 "<父>::<agent>"）
+# Exact session_id blacklist. Subagent sessions are stored as "<parent>::<agent>".
 session_ids = [
     # "11111111-1111-1111-1111-111111111111",
 ]
 
-# 按消息 role 精确排除：可选值 "user" / "assistant"
-# （tool_result / thinking 不会出现在 role 字段里，应改用 block_kinds）
+# Drop matched blocks by `role` ("user" / "assistant"). Note: tool_result and
+# thinking are *block_kinds*, not roles — exclude them via block_kinds below.
 roles = []
 
-# 按 block_kind 精确排除：可选值 "text" / "tool_use" / "tool_result" / "thinking"
-# 例如不想让命令输出参与召回：
+# Drop matched blocks by `block_kind` ("text" / "tool_use" / "tool_result" / "thinking").
+# Example: keep tool output noise out of recall.
 block_kinds = ["tool_result"]
 
 [filter]
-# 仅返回总消息数 ≥ N 的 session，过滤误开/废弃会话
+# Only return sessions with at least N messages — drops misfires / aborted chats.
 min_message_count = 0
 
-# 仅返回 user 消息数 ≥ N 的 session（更严格，过滤被中断的会话）
+# Stricter variant on user messages — drops sessions you abandoned mid-typing.
 min_user_message_count = 0
 ```
 
-**与 CLI 参数的关系**
+**Interaction with CLI flags**
 
-| 维度 | CLI | 配置 |
+| Dimension | CLI | Config |
 |---|---|---|
-| `--cwd <prefix>` | 包含过滤（仅返回该前缀） | `exclude.cwds`：排除规则；与 CLI 叠加 |
-| `--since` / `--until` | 单次查询时间窗口 | 配置不提供默认时间过滤 |
+| `--cwd <prefix>` | inclusion filter (only that prefix) | `exclude.cwds` is an exclusion; both apply |
+| `--since` / `--until` | per-query time window | config has no default time filter |
 
-**临时旁路**：加 `--no-config` 即可在某次查询里忽略全部配置规则（比如真要去 scratch 里翻一下）。
+**One-shot bypass**: `--no-config` skips every config rule for that invocation (useful when you actually need to dig into `/scratch`).
 
-**生效状态**：JSON 输出中的 `filters.config_applied` 字段标记本次查询是否实际应用了配置（文件存在且未 `--no-config`）。结果偏少时可以据此判断是配置静默裁剪还是真没匹配。
+**Did config apply?**: the JSON output's `filters.config_applied` says whether config rules were honored (file present and `--no-config` not passed). Useful for telling "few results because of config" apart from "few results because nothing matched".
 
-## 增量更新（Stop hook）
+## Incremental updates (Stop hook)
 
-`chist search` 不再做查询时同步 — 索引由 Claude Code 的 Stop / SubagentStop hook 触发后台 `chist sync` 来跟进。
+`chist search` no longer scans on the query path — incremental updates are driven by Claude Code's Stop / SubagentStop hooks running `chist sync` in the background.
 
-### 安装
+### Install
 
 ```sh
-chist install-hook       # 写入 ~/.claude/settings.json
-chist uninstall-hook     # 反向操作；只移除 chist 自己写入的条目
+chist install-hook       # writes into ~/.claude/settings.json
+chist uninstall-hook     # reverses it; only chist-owned entries are removed
 ```
 
-`install-hook` 在 `~/.claude/settings.json` 的 `hooks.Stop` 与 `hooks.SubagentStop` 数组里各 append 一项：
+`install-hook` appends one entry to each of `hooks.Stop` and `hooks.SubagentStop` in `~/.claude/settings.json`:
 
 ```json
 {
@@ -144,19 +146,19 @@ chist uninstall-hook     # 反向操作；只移除 chist 自己写入的条目
 }
 ```
 
-幂等：重复运行不会产生重复条目。已有的 `Stop` / `SubagentStop` 配置会被保留（与 chist 自己的并列）。写入前先备份 `settings.json.bak`。
+Idempotent: running it twice does not produce duplicates. Any existing `Stop` / `SubagentStop` hooks the user has are preserved alongside chist's. The previous file is backed up to `settings.json.bak` before write.
 
-### 行为
+### Behavior
 
-- hook 命令立即返回 0（`bash -c '... &'`），CC 不会因此卡 turn
-- 后台进程跑 `chist sync`：walkdir + mtime/size 比对 + reindex 变更的 + 清失踪的，过程几百 ms
-- **30 秒 cooldown**：连发消息只在首条触发；之后命中 cooldown 直接退出（"晚一点就晚一点"）
-- 多个 sync 并行竞争：靠 SQLite WAL 写锁串行 + cooldown 入口去重；不引入文件锁
-- subagent jsonl 跟主 jsonl 用同一套 sync 路径
+- The hook command returns 0 immediately (`bash -c '... &'`); Claude Code never blocks a turn on it.
+- The background process runs `chist sync`: walkdir + mtime/size diff + reindex changed files + drop missing ones, ~hundreds of milliseconds.
+- **30s cooldown**: bursts of messages only trigger sync on the first one; subsequent invocations exit immediately on the cooldown gate ("a little late is fine").
+- Concurrent syncs: SQLite WAL serializes writes; the cooldown gate dedupes at the entrance. No explicit file lock.
+- Subagent jsonl files go through the same sync path.
 
-### 调试
+### Debugging
 
-后台进程的 stderr 被 hook 写法丢弃，但每次 sync 会写一行到 `~/.cache/chist/sync.log`：
+The hook discards stderr by design, but every sync writes one line to `~/.cache/chist/sync.log`:
 
 ```
 2026-05-09T09:50:11+08:00  pid=12345  done: 3r/0d/0f in 142ms (2965 on disk, 2962 indexed)
@@ -164,67 +166,77 @@ chist uninstall-hook     # 反向操作；只移除 chist 自己写入的条目
 2026-05-09T09:51:02+08:00  pid=12450  error: ...
 ```
 
-格式：`<本地时间> pid=<PID> <状态>`。状态为 `done: <reindexed>r/<deleted>d/<failed>f in <ms>ms (...)`、`skipped (cooldown, ...)` 或 `error: ...`。
+Format: `<local time> pid=<PID> <status>` where status is `done: <reindexed>r/<deleted>d/<failed>f in <ms>ms (...)`, `skipped (cooldown, ...)`, or `error: ...`.
 
-要手动跑一次（绕过 cooldown 与 hook）：`chist sync --force`。
+To run one manually (bypass cooldown and the hook): `chist sync --force`.
 
-## 作为 Claude Code skill
+## As a Claude Code skill
 
 ```sh
 mkdir -p ~/.claude/skills/claude-history
 cp skill/SKILL.md ~/.claude/skills/claude-history/
 ```
 
-之后在 Claude Code 里描述场景（"上次我们聊那个 X 的对话怎么找"）会自动触发。
+After this, describing the situation in Claude Code ("what was that conversation about X?") triggers chist automatically.
 
-## 行为
+## How it behaves
 
-- 增量更新：见上方"增量更新（Stop hook）"。`chist search` 本身只查 DB
-- subagent session：路径含 `subagents/` 的 jsonl 单独建条目，不被父 session 覆盖
-- 索引内容：`text` / `thinking` / `tool_use` 名称+参数 / `tool_result` 输出，每块上限 100KB
-- Tokenizer：默认 `jieba`，单/双字 CJK 直接命中；可在 config 切回 `trigram`，详见下节
+- Incremental updates: see "Incremental updates (Stop hook)" above. `chist search` itself only reads the DB.
+- Subagent sessions: jsonl files containing `subagents/` in their path get their own entries — they don't overwrite the parent session.
+- Index content: `text` / `thinking` / `tool_use` name+args / `tool_result` output. Each block capped at 100KB.
+- Tokenizer: default `jieba` — 1- and 2-character CJK queries hit. Switch to `trigram` via config; see below.
 
-## 分词器（Tokenizer）
+## Tokenizer
 
-`config.toml` 里的 `[tokenizer]` 段决定索引和查询如何切词：
+The `[tokenizer]` section of `config.toml` controls how content and queries are segmented:
 
 ```toml
 [tokenizer]
-backend = "jieba"        # 默认；中文分词，1-2 字 CJK 也能命中
-# backend = "trigram"    # 旧默认；3-char 滑窗，CJK 至少 3 字才能匹配
-# backend = "unicode61"  # 仅按空白/标点切，中文召回最差
+backend = "jieba"        # default; Chinese word segmentation; 1-2 char CJK queries hit
+# backend = "trigram"    # old default; 3-char sliding window; CJK needs ≥3 chars
+# backend = "unicode61"  # whitespace/punctuation only; worst CJK recall
 ```
 
-| backend | "前端" 命中 | "实现" 命中 | 索引大小 | 二进制大小 |
+| backend | "前端" hits | "实现" hits | Index size | Binary size |
 |---|---|---|---|---|
-| `jieba` (默认) | ✓ | ✓ | 小（按词索引） | +5MB（词典内嵌） |
-| `trigram` | ✗ | ✗ | 大（trigram 膨胀） | 无附加 |
-| `unicode61` | ✗（CJK 不切） | ✗ | 小 | 无附加 |
+| `jieba` (default) | ✓ | ✓ | small (per-word) | +5MB (dict embedded) |
+| `trigram` | ✗ | ✗ | large (trigram blowup) | none |
+| `unicode61` | ✗ (no CJK split) | ✗ | small | none |
 
-切换 backend **必须 rebuild**：分词器是索引时和查询时都参与的协议，存在 DB 的 `meta.tokenizer_id` 里。
+Switching backend **requires a rebuild**: the tokenizer is a write-side and read-side contract, recorded in the DB at `meta.tokenizer_id`.
 
 ```sh
-# 切到 trigram：
+# Switch to trigram:
 echo '[tokenizer]
 backend = "trigram"' >> ~/.config/chist/config.toml
 chist rebuild
 ```
 
-如果配置和索引不一致（改了 config 但没 rebuild），`chist search` 会以 **索引为准**（DB 实际分词器）继续工作，并在 stderr 提示：
+If the config and the index disagree (config changed without rebuild), `chist search` proceeds with the **index's** tokenizer and prints a warning to stderr:
 
 ```
 warning: config requests tokenizer `trigram` but index was built with `jieba`. Searching with `jieba`. Run `chist rebuild` to switch.
 ```
 
-## 索引位置
+## Index location
 
 ```
 ~/.cache/chist/index.db        # macOS: ~/Library/Caches/chist/
 ```
 
-可用 `sqlite3` 直接查表：
+Direct SQL is fine if you want to poke at it:
 
 ```sh
 sqlite3 ~/.cache/chist/index.db "SELECT count(*) FROM sessions"
 sqlite3 ~/.cache/chist/index.db ".schema messages_fts"
 ```
+
+## Contributor notes
+
+This repo ships a commit-msg hook that enforces English commit messages. Enable it once after cloning:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+GitHub does not auto-enable shipped hooks for security reasons.
