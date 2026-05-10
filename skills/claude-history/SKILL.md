@@ -1,6 +1,7 @@
 ---
 name: claude-history
 description: Full-text search across the user's past Claude Code sessions; locates a historical session and prints a paste-ready resume command. Use when the user mentions "that conversation we had about…", "which project did I discuss X in?", "find my old chat about…", "switch back to that session", "resume that conversation about…", or analogous requests in any language.
+disable-model-invocation: true
 ---
 
 # claude-history search skill
