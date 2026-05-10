@@ -1,67 +1,73 @@
 ---
 name: claude-history
-description: 在用户过往所有 Claude Code 会话里全文搜索，找到指定历史 session 并给出可粘贴的 resume 命令。当用户提到"上次我们聊过…的对话"、"我之前在哪个项目里讨论过…"、"找回之前关于…的对话"、"切回那个 session"、"resume that conversation about…" 时使用。
+description: Full-text search across the user's past Claude Code sessions; locates a historical session and prints a paste-ready resume command. Use when the user mentions "that conversation we had about…", "which project did I discuss X in?", "find my old chat about…", "switch back to that session", "resume that conversation about…", or analogous requests in any language.
 ---
 
 # claude-history search skill
 
-`chist` 是一个本地 CLI 二进制，索引 `~/.claude/projects/*/` 下所有 session jsonl 并提供全文检索。结果带可粘贴的 `claude --resume` 命令。
+`chist` is a local CLI binary that indexes every session jsonl under `~/.claude/projects/*/` and exposes full-text search. Results carry a paste-ready `claude --resume` command.
 
-## 调用
+## Invocation
 
 ```
-chist search "<query>" [--cwd <prefix>] [--since <date>] [--until <date>] [--limit <n>] [--no-scan]
+chist search "<query>" [--cwd <prefix>] [--since <date>] [--until <date>] [--limit <n>] [--snippet-tokens <N>]
 ```
 
-- `--cwd`: 限定到某项目根目录前缀（如 `--cwd ~/projects/myapp`）
-- `--since` / `--until`: 接受 `7d`（N 天前）/ `2026-04-15` / RFC3339
-- `--limit`: 默认 20，建议给 AI 用时设 5
-- `--no-scan`: 跳过增量 mtime 扫描，仅查现有索引（连续多次查询时使用，省 ~500ms-2s）
+- `--cwd`: restrict to sessions whose cwd starts with this prefix (e.g. `--cwd ~/projects/myapp`).
+- `--since` / `--until`: accept `7d` (N days ago), `2026-04-15`, or RFC3339.
+- `--limit`: default 20; when invoked from an AI, 5 is usually enough.
+- `--snippet-tokens <N>`: tokens of context shown around each hit (FTS5 caps at 1..=64; default 16).
 
-输出 JSON。每条结果含：
-- `session_id` — 一行内的唯一键（subagent 会带 `::agent-…` 后缀）
-- `claude_session_id` — 真实的 session UUID（subagent 等同其父）
-- `is_subagent` — 是否子 agent session
-- `cwd` — 项目工作目录
-- `title` / `title_source` — 显示标题及其来源
-- `started_at` / `last_activity` — RFC3339 时间
-- `message_count` — 消息条数
-- `snippet` — 命中片段，匹配词包在 `<<>>` 之间
-- `score` — 相关性分（越大越相关）
-- `resume_command` — 可粘贴：`cd '<cwd>' && claude --resume <session_id>`
+Output is JSON. Each result carries:
 
-## 何时使用
+- `session_id` — unique key in the index (subagent rows append `::agent-…`).
+- `claude_session_id` — the real session UUID (a subagent shares its parent's UUID).
+- `is_subagent` — whether this row is a subagent session.
+- `cwd` — the session's working directory.
+- `title` / `title_source` — display title and where it came from (`custom_title` / `ai_title` / `first_user_message`).
+- `started_at` / `last_activity` — RFC3339 timestamps.
+- `message_count` — total messages in the session.
+- `snippet` — best-rank match excerpt, with the matched term wrapped in `<< >>`.
+- `matches` — up to 5 hits per session (`snippet` / `role` / `block_kind` / `score`), sorted by relevance. The first entry duplicates the top-level `snippet` and `score`.
+- `score` — relevance (higher is better).
+- `resume_command` — paste-ready: `cd '<cwd>' && claude --resume <session_id>`.
 
-**应该用：**
-- 用户问"我们之前聊过那个 X 怎么处理的"
-- 用户想切回某个 session 但忘了 ID/项目
-- 用户要求"在所有 Claude 历史里搜 Y"
-- 用户提到一个特定项目并想找其对话
+## When to use
 
-**不该用：**
-- 当前 session 内容（用户在场，他们能直接看）
-- 一般代码搜索（用 Grep/Glob）
-- 找文件内容（用 Read）
+**Use it when:**
+- The user asks "what did we say about X last time?"
+- The user wants to switch back to a session but forgot the id / project.
+- The user asks to search across "all my Claude history" for Y.
+- The user mentions a specific project and wants to find its conversations.
 
-## 与用户的交互
+**Don't use it for:**
+- The current session's content — the user already has it on screen.
+- General code search — use Grep / Glob.
+- Reading a known file — use Read.
 
-1. 跑一次 `chist search "<关键词>" --limit 5`
-2. 给出 top 3-5 个候选：标题、相对时间（如"3 天前"）、cwd、snippet
-3. 让用户挑一个，然后**展示** `resume_command` 让他自己复制。
-4. **不要替用户执行 resume** —— 那会切走当前会话上下文。
+## Interaction pattern
 
-## 查询技巧
+1. Run `chist search "<keywords>" --limit 5`.
+2. Surface the top 3–5 candidates: title, relative time (e.g. "3 days ago"), cwd, snippet.
+3. Let the user pick one, then **show** the `resume_command` for them to copy.
+4. **Do not run resume yourself** — that would tear down the current session's context.
 
-- 中英混合：trigram tokenizer 自动处理，原样输入即可
-- 含 `-` `/` `:` 等特殊字符的 query 会自动转义
-- 2 字 CJK 命中率较低（trigram 限制），建议加上下文：`"前端"` → `"前端项目"` 或 `"前端框架"`
-- 多个关键词隐式 AND：`rust async retry` 会找同时含三个的会话
+## Query tips
 
-## 安装与维护
+- Mixed CJK + English queries pass through unchanged; the indexer handles segmentation (default backend is jieba, which makes 1- and 2-character Chinese queries hit).
+- Punctuation like `-` `/` `:` inside a token is auto-escaped — type the query verbatim.
+- Multiple whitespace-separated keywords are implicit AND: `rust async retry` finds sessions containing all three.
+- For very rare 1-character CJK queries, prefer adding context (`"端"` → `"前端"` / `"端口"`).
 
-二进制位置：`~/.cargo/bin/chist`（cargo install）或工作目录下 `target/release/chist`。
-索引位置：`~/.cache/chist/index.db`（SQLite + FTS5）。
+## Install & maintenance
 
-- 首次跑 `chist rebuild` 全量建索引（约 2 分钟，2900+ session × ~9GB jsonl）
-- 之后每次 `chist search` 自动增量；若觉得索引不准可再次 `chist rebuild`
-- 看索引状态：`chist stats`
+- Binary location: `~/.cargo/bin/chist` (after `cargo install`) or `target/release/chist` from the repo.
+- Index location: `~/.cache/chist/index.db` (SQLite + FTS5). On macOS this resolves to `~/Library/Caches/chist/index.db`.
+
+Lifecycle:
+
+- First run: `chist rebuild` to build the full index (~13s for ~3000 sessions / ~9GB jsonl).
+- Routine: incremental updates are driven by Claude Code's Stop / SubagentStop hooks once `chist install-hook` has been run; the index stays warm in the background.
+- Manual catch-up: `chist sync` (or `chist sync --force` to bypass the 30s cooldown).
+- Inspect state: `chist stats`.
+- Switching tokenizer (`[tokenizer] backend` in `~/.config/chist/config.toml`) requires a `chist rebuild` afterwards.
