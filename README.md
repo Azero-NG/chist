@@ -6,6 +6,8 @@ Indexes the session jsonl files under `~/.claude/projects/*/` into SQLite FTS5 s
 
 ## Install
 
+### 1. The `chist` binary
+
 ```sh
 cargo install --path .
 # or build locally
@@ -13,6 +15,25 @@ cargo build --release
 ```
 
 Binary lives at `~/.cargo/bin/chist` (after `cargo install`) or `target/release/chist`.
+
+### 2. The Claude Code skill (recommended)
+
+The skill teaches Claude Code when to call `chist` for you ("what was that conversation about X?" → it runs the search and reads back results). Install via [vercel-labs/skills](https://github.com/vercel-labs/skills):
+
+```sh
+# Global — ~/.claude/skills/, available across all projects
+npx skills add -g https://github.com/Azero-NG/chist/tree/main/skills/claude-history
+
+# Or per-project — ./.claude/skills/
+npx skills add https://github.com/Azero-NG/chist/tree/main/skills/claude-history
+```
+
+Manual install if you'd rather not use npx:
+
+```sh
+mkdir -p ~/.claude/skills/claude-history
+cp skills/claude-history/SKILL.md ~/.claude/skills/claude-history/
+```
 
 ## Usage
 
@@ -169,27 +190,6 @@ The hook discards stderr by design, but every sync writes one line to `~/.cache/
 Format: `<local time> pid=<PID> <status>` where status is `done: <reindexed>r/<deleted>d/<failed>f in <ms>ms (...)`, `skipped (cooldown, ...)`, or `error: ...`.
 
 To run one manually (bypass cooldown and the hook): `chist sync --force`.
-
-## As a Claude Code skill
-
-The recommended one-liner uses the [`skills` CLI from vercel-labs/skills](https://github.com/vercel-labs/skills):
-
-```sh
-# Global — installs into ~/.claude/skills/, available across all projects
-npx skills add -g https://github.com/Azero-NG/chist/tree/main/skills/claude-history
-
-# Or per-project — installs into ./.claude/skills/
-npx skills add https://github.com/Azero-NG/chist/tree/main/skills/claude-history
-```
-
-Manual install if you prefer not to run npx:
-
-```sh
-mkdir -p ~/.claude/skills/claude-history
-cp skills/claude-history/SKILL.md ~/.claude/skills/claude-history/
-```
-
-After this, describing the situation in Claude Code ("what was that conversation about X?") triggers chist automatically.
 
 ## How it behaves
 

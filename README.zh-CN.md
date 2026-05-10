@@ -6,6 +6,8 @@
 
 ## 安装
 
+### 1. `chist` 二进制
+
 ```sh
 cargo install --path .
 # 或本地构建
@@ -13,6 +15,25 @@ cargo build --release
 ```
 
 二进制：`~/.cargo/bin/chist`（cargo install 后），或 `target/release/chist`。
+
+### 2. Claude Code skill（推荐）
+
+skill 让 Claude Code 知道什么时候帮你调 `chist`（你说"上次那个 X 的对话怎么找"→ 它自动跑搜索并读回结果）。用 [vercel-labs/skills](https://github.com/vercel-labs/skills) 一键装：
+
+```sh
+# 全局安装到 ~/.claude/skills/，所有项目可用
+npx skills add -g https://github.com/Azero-NG/chist/tree/main/skills/claude-history
+
+# 或仅装到当前项目 ./.claude/skills/
+npx skills add https://github.com/Azero-NG/chist/tree/main/skills/claude-history
+```
+
+不想用 npx 的话手动复制：
+
+```sh
+mkdir -p ~/.claude/skills/claude-history
+cp skills/claude-history/SKILL.md ~/.claude/skills/claude-history/
+```
 
 ## 用法
 
@@ -169,27 +190,6 @@ chist uninstall-hook     # 反向操作；只移除 chist 自己写入的条目
 格式：`<本地时间> pid=<PID> <状态>`。状态为 `done: <reindexed>r/<deleted>d/<failed>f in <ms>ms (...)`、`skipped (cooldown, ...)` 或 `error: ...`。
 
 要手动跑一次（绕过 cooldown 与 hook）：`chist sync --force`。
-
-## 作为 Claude Code skill
-
-推荐用 [vercel-labs/skills 的 `skills` CLI](https://github.com/vercel-labs/skills) 一键安装：
-
-```sh
-# 全局安装到 ~/.claude/skills/，所有项目可用
-npx skills add -g https://github.com/Azero-NG/chist/tree/main/skills/claude-history
-
-# 或仅安装到当前项目 ./.claude/skills/
-npx skills add https://github.com/Azero-NG/chist/tree/main/skills/claude-history
-```
-
-不想用 npx 的话手动复制：
-
-```sh
-mkdir -p ~/.claude/skills/claude-history
-cp skills/claude-history/SKILL.md ~/.claude/skills/claude-history/
-```
-
-之后在 Claude Code 里描述场景（"上次我们聊那个 X 的对话怎么找"）会自动触发。
 
 ## 行为
 
